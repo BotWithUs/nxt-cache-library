@@ -136,7 +136,7 @@ set(NXTCache_SOURCES
 	"src/network/Js5Socket.h"
 )
 
-add_library(NXTCache STATIC)
+add_library(NXTCache SHARED)
 
 target_sources(NXTCache PRIVATE ${NXTCache_SOURCES})
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${NXTCache_SOURCES})
@@ -155,6 +155,11 @@ target_link_libraries(NXTCache PUBLIC
 	BZip2::BZip2
 	ws2_32
 	winhttp
+)
+
+set_target_properties(NXTCache PROPERTIES
+	WINDOWS_EXPORT_ALL_SYMBOLS
+		ON
 )
 
 # Target: nxtcache-dumper

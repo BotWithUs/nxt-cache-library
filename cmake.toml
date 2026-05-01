@@ -42,7 +42,7 @@ tag = "v3.11.3"
 shallow = true
 
 [target.NXTCache]
-type = "static"
+type = "shared"
 sources = [
     "src/core/*.cpp",
     "src/config_types/*.cpp",
@@ -63,6 +63,7 @@ link-libraries = [
     "winhttp",
 ]
 compile-features = ["cxx_std_20"]
+properties.WINDOWS_EXPORT_ALL_SYMBOLS = true
 
 [target.nxtcache-dumper]
 condition = "build-dumper"
