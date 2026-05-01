@@ -1,9 +1,11 @@
 #include "config_types/Types.h"
 #include "core/Archive.h"
+#include "core/CacheSource.h"
 #include "core/DbRowProvider.h"
 #include "core/Index.h"
 #include "core/RSCache.h"
 #include "dumper/Json.h"
+#include "network/Js5Cache.h"
 
 #include <nlohmann/json.hpp>
 
@@ -14,6 +16,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -55,13 +58,19 @@ void usage(const char *prog)
     std::cerr
         << "NXTCache JSON dumper\n"
         << "\n"
-        << "Usage: " << prog << " --cache <path> --type <name> [options]\n"
+        << "Usage: " << prog << " --type <name> [--cache <path> | --source live] [options]\n"
         << "\n"
         << "Required:\n"
-        << "  --cache <path>      Cache directory containing js5-*.jcache files\n"
         << "  --type <name>       npc | item | loc | seq | varbit | enum | struct |\n"
         << "                      inv | param | quest | underlay | overlay |\n"
         << "                      worldmap | dbrow\n"
+        << "\n"
+        << "Source (pick one; default: local):\n"
+        << "  --cache <path>      Read from local sqlite jcache (js5-*.jcache files)\n"
+        << "  --source live       Fetch directly from Jagex JS5 servers\n"
+        << "  --source local      (default) same as --cache\n"
+        << "  --fallback live     With --cache, transparently pull missing archives\n"
+        << "                      from the live JS5 source\n"
         << "\n"
         << "Optional:\n"
         << "  --id <n>            Dump a single id (default: dump all known)\n"
@@ -86,11 +95,10 @@ json decodeFile(Archive &archive, int fileId, int actualId)
 }
 
 template<typename T>
-json dumpRange(RSCache &cache, const TypeMapping &m,
+json dumpRange(CacheSource &cache, const TypeMapping &m,
                std::optional<int> singleId, std::optional<int> limit)
 {
     json out = json::array();
-    auto &idx = cache.index(m.indexId);
 
     if (singleId)
     {
@@ -102,7 +110,7 @@ json dumpRange(RSCache &cache, const TypeMapping &m,
             aid = id >> m.shift;
             file = id & ((1 << m.shift) - 1);
         }
-        auto &archive = idx.archive(aid);
+        auto &archive = cache.archive(m.indexId, aid);
         if (archive.id == -1) return out;
         json entry = decodeFile<T>(archive, file, id);
         if (!entry.is_null()) out.push_back(std::move(entry));
@@ -114,11 +122,11 @@ json dumpRange(RSCache &cache, const TypeMapping &m,
 
     if (m.archiveId == -1)
     {
-        std::vector<int> aids = idx.archiveIds;
+        std::vector<int> aids = cache.archiveIds(m.indexId);
         for (int aid: aids)
         {
             if (!wantMore()) break;
-            auto &archive = idx.archive(aid);
+            auto &archive = cache.archive(m.indexId, aid);
             if (archive.id == -1) continue;
             for (auto &[fid, fh]: archive.files)
             {
@@ -135,7 +143,7 @@ json dumpRange(RSCache &cache, const TypeMapping &m,
     }
     else
     {
-        auto &archive = idx.archive(m.archiveId);
+        auto &archive = cache.archive(m.indexId, m.archiveId);
         if (archive.id != -1)
         {
             for (auto &[fid, fh]: archive.files)
@@ -153,15 +161,14 @@ json dumpRange(RSCache &cache, const TypeMapping &m,
     return out;
 }
 
-json dumpDbRows(RSCache &cache, const TypeMapping &m,
+json dumpDbRows(CacheSource &cache, const TypeMapping &m,
                 std::optional<int> singleId, std::optional<int> limit)
 {
     json out = json::array();
     DbRowProvider provider(&cache);
     provider.load();
 
-    auto &idx = cache.index(m.indexId);
-    auto &archive = idx.archive(m.archiveId);
+    auto &archive = cache.archive(m.indexId, m.archiveId);
     if (archive.id == -1) return out;
 
     int count = 0;
@@ -202,6 +209,8 @@ int main(int argc, char **argv)
     std::string cachePath;
     std::string typeName;
     std::string outPath;
+    std::string sourceMode = "local";
+    std::string fallbackMode;
     std::optional<int> id;
     std::optional<int> limit;
     std::optional<int> indexOverride;
@@ -238,6 +247,8 @@ int main(int argc, char **argv)
             return 0;
         }
         else if (a == "--cache")    cachePath = takeArg(i, "--cache");
+        else if (a == "--source")   sourceMode = takeArg(i, "--source");
+        else if (a == "--fallback") fallbackMode = takeArg(i, "--fallback");
         else if (a == "--type")     typeName  = takeArg(i, "--type");
         else if (a == "--id")       id              = takeIntArg(i, "--id");
         else if (a == "--limit")    limit           = takeIntArg(i, "--limit");
@@ -254,8 +265,20 @@ int main(int argc, char **argv)
         }
     }
 
-    if (cachePath.empty() || typeName.empty())
+    if (typeName.empty())
     {
+        usage(argv[0]);
+        return 2;
+    }
+    if (sourceMode != "local" && sourceMode != "live")
+    {
+        std::cerr << "Invalid --source '" << sourceMode << "' (expected: local | live)\n\n";
+        usage(argv[0]);
+        return 2;
+    }
+    if (sourceMode == "local" && cachePath.empty())
+    {
+        std::cerr << "--cache <path> is required when --source local (default)\n\n";
         usage(argv[0]);
         return 2;
     }
@@ -272,25 +295,63 @@ int main(int argc, char **argv)
     if (archiveOverride) m.archiveId = *archiveOverride;
     if (shiftOverride)   m.shift = *shiftOverride;
 
-    RSCache cache(cachePath);
+    if (!fallbackMode.empty() && fallbackMode != "live")
+    {
+        std::cerr << "Invalid --fallback '" << fallbackMode << "' (only 'live' is supported)\n\n";
+        usage(argv[0]);
+        return 2;
+    }
+    if (!fallbackMode.empty() && sourceMode == "live")
+    {
+        std::cerr << "--fallback live is redundant when --source live is set\n\n";
+        return 2;
+    }
+
+    std::unique_ptr<CacheSource> cache;
+    try
+    {
+        if (sourceMode == "live")
+        {
+            auto live = std::make_unique<js5::Js5Cache>();
+            std::cerr << "Connected to live JS5 (build "
+                      << live->serverConfig().serverVersionMajor << ")\n";
+            cache = std::move(live);
+        }
+        else
+        {
+            auto local = std::make_unique<RSCache>(cachePath);
+            if (fallbackMode == "live")
+            {
+                local->enableLiveFallback();
+                std::cerr << "Live JS5 fallback enabled\n";
+            }
+            cache = std::move(local);
+        }
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Failed to open cache source: " << e.what() << "\n";
+        return 1;
+    }
+
     json out;
 
     try
     {
-        if (typeName == "npc")           out = dumpRange<NpcType>(cache, m, id, limit);
-        else if (typeName == "item")     out = dumpRange<ItemType>(cache, m, id, limit);
-        else if (typeName == "loc")      out = dumpRange<LocationType>(cache, m, id, limit);
-        else if (typeName == "seq")      out = dumpRange<SequenceType>(cache, m, id, limit);
-        else if (typeName == "varbit")   out = dumpRange<VarbitType>(cache, m, id, limit);
-        else if (typeName == "enum")     out = dumpRange<EnumType>(cache, m, id, limit);
-        else if (typeName == "struct")   out = dumpRange<StructType>(cache, m, id, limit);
-        else if (typeName == "inv")      out = dumpRange<InventoryType>(cache, m, id, limit);
-        else if (typeName == "param")    out = dumpRange<ParamType>(cache, m, id, limit);
-        else if (typeName == "quest")    out = dumpRange<QuestType>(cache, m, id, limit);
-        else if (typeName == "underlay") out = dumpRange<UnderlayType>(cache, m, id, limit);
-        else if (typeName == "overlay")  out = dumpRange<OverlayType>(cache, m, id, limit);
-        else if (typeName == "worldmap") out = dumpRange<WorldMapElementType>(cache, m, id, limit);
-        else if (typeName == "dbrow")    out = dumpDbRows(cache, m, id, limit);
+        if (typeName == "npc")           out = dumpRange<NpcType>(*cache, m, id, limit);
+        else if (typeName == "item")     out = dumpRange<ItemType>(*cache, m, id, limit);
+        else if (typeName == "loc")      out = dumpRange<LocationType>(*cache, m, id, limit);
+        else if (typeName == "seq")      out = dumpRange<SequenceType>(*cache, m, id, limit);
+        else if (typeName == "varbit")   out = dumpRange<VarbitType>(*cache, m, id, limit);
+        else if (typeName == "enum")     out = dumpRange<EnumType>(*cache, m, id, limit);
+        else if (typeName == "struct")   out = dumpRange<StructType>(*cache, m, id, limit);
+        else if (typeName == "inv")      out = dumpRange<InventoryType>(*cache, m, id, limit);
+        else if (typeName == "param")    out = dumpRange<ParamType>(*cache, m, id, limit);
+        else if (typeName == "quest")    out = dumpRange<QuestType>(*cache, m, id, limit);
+        else if (typeName == "underlay") out = dumpRange<UnderlayType>(*cache, m, id, limit);
+        else if (typeName == "overlay")  out = dumpRange<OverlayType>(*cache, m, id, limit);
+        else if (typeName == "worldmap") out = dumpRange<WorldMapElementType>(*cache, m, id, limit);
+        else if (typeName == "dbrow")    out = dumpDbRows(*cache, m, id, limit);
     }
     catch (const std::exception &e)
     {

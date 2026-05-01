@@ -1,13 +1,18 @@
 #include "core/Index.h"
 
 #include "gzip/decompress.hpp"
+#include "network/Js5Archive.h"
+#include "network/Js5Compression.h"
 
 #include <sqlite3.h>
 
 #include <cstdio>
 #include <cstring>
+#include <utility>
+#include <vector>
 
-Index::Index(int id, const std::string &file) : id(id)
+Index::Index(int id, const std::string &file, FallbackFn fallback)
+    : id(id), fallback_(std::move(fallback))
 {
     auto rc = sqlite3_open(file.c_str(), &db);
     if (rc != SQLITE_OK)
@@ -16,6 +21,29 @@ Index::Index(int id, const std::string &file) : id(id)
     }
     RSBuffer buffer(0);
     readReferenceBlob(buffer);
+
+    if (buffer.size() == 0 && fallback_)
+    {
+        // sqlite has no reference table for this index — try the live source.
+        try
+        {
+            auto raw = fallback_(255, id);
+            if (raw && !raw->empty())
+            {
+                auto decompressed = js5::decompress(raw->data(), raw->size());
+                buffer.writeFully(reinterpret_cast<char *>(decompressed.data()),
+                                   decompressed.size());
+                decodeReferenceBlob(buffer);
+                return;
+            }
+        }
+        catch (const std::exception &e)
+        {
+            std::fprintf(stderr, "Live fallback for ref table %d failed: %s\n",
+                         id, e.what());
+        }
+    }
+
     Index::decompress(buffer);
     decodeReferenceBlob(buffer);
 }
@@ -38,6 +66,30 @@ Archive &Index::archive(int archiveId)
     {
         std::printf("Failed to read archive blob\n");
     }
+
+    if (buffer.size() == 0 && fallback_)
+    {
+        // sqlite has no blob for this archive — fall back to the live source.
+        try
+        {
+            auto raw = fallback_(id, archiveId);
+            if (raw && !raw->empty())
+            {
+                auto decompressed = js5::decompress(raw->data(), raw->size());
+                std::vector<int> subIds(archive.fileIds.begin(), archive.fileIds.end());
+                js5::unpackNetworkArchive(decompressed, subIds, archive);
+                archive.loaded = true;
+                return archive;
+            }
+        }
+        catch (const std::exception &e)
+        {
+            std::fprintf(stderr,
+                         "Live fallback for archive %d.%d failed: %s\n",
+                         id, archiveId, e.what());
+        }
+    }
+
     err = decodeArchiveBlob(archive, buffer);
     if (err != 0)
     {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "config_types/Types.h"
+#include "core/CacheSource.h"
 #include "core/ConfigProvider.h"
 
 #include <cstdint>
@@ -13,7 +14,7 @@ class DbRowProvider
     static constexpr int CONFIG_INDEX = 2;
     static constexpr int DB_ROW_ARCHIVE = 41;
 
-    RSCache *cache_;
+    CacheSource *cache_;
     std::map<int, DbRowType> dbRows_;
     std::unordered_map<int64_t, std::vector<int>> tableKeyIndex_;
     bool loaded_ = false;
@@ -24,14 +25,13 @@ class DbRowProvider
     }
 
 public:
-    explicit DbRowProvider(RSCache *cache) : cache_(cache) {}
+    explicit DbRowProvider(CacheSource *cache) : cache_(cache) {}
 
     void load()
     {
         if (loaded_ || !cache_) return;
 
-        auto &index = cache_->index(CONFIG_INDEX);
-        auto &archive = index.archive(DB_ROW_ARCHIVE);
+        auto &archive = cache_->archive(CONFIG_INDEX, DB_ROW_ARCHIVE);
 
         for (auto &[fileId, fh] : archive.files)
         {

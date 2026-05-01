@@ -4,7 +4,8 @@
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "dependencies": [
     "sqlite3",
-    "zlib"
+    "zlib",
+    "bzip2"
   ],
   "description": "C++ library for reading the RuneScape NXT cache (sqlite-backed jcache files)",
   "name": "nxtcachelibrary",

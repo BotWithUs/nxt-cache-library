@@ -28,11 +28,12 @@ build-dumper = "NXTCACHE_BUILD_DUMPER"
 
 [vcpkg]
 version = "2025.06.13"
-packages = ["sqlite3", "zlib"]
+packages = ["sqlite3", "zlib", "bzip2"]
 
 [find-package]
 unofficial-sqlite3 = { }
 ZLIB = { }
+BZip2 = { }
 
 [fetch-content.nlohmann_json]
 condition = "build-dumper"
@@ -45,16 +46,21 @@ type = "static"
 sources = [
     "src/core/*.cpp",
     "src/config_types/*.cpp",
+    "src/network/*.cpp",
 ]
 headers = [
     "src/core/*.h",
     "src/gzip/*.hpp",
     "src/config_types/*.h",
+    "src/network/*.h",
 ]
 include-directories = ["src"]
 link-libraries = [
     "unofficial::sqlite3::sqlite3",
     "ZLIB::ZLIB",
+    "BZip2::BZip2",
+    "ws2_32",
+    "winhttp",
 ]
 compile-features = ["cxx_std_20"]
 

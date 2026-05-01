@@ -80,6 +80,8 @@ find_package(unofficial-sqlite3 REQUIRED)
 
 find_package(ZLIB REQUIRED)
 
+find_package(BZip2 REQUIRED)
+
 include(FetchContent)
 
 if(NXTCACHE_BUILD_DUMPER) # build-dumper
@@ -104,6 +106,7 @@ set(NXTCache_SOURCES
 	"src/config_types/Types.h"
 	"src/core/Archive.cpp"
 	"src/core/Archive.h"
+	"src/core/CacheSource.h"
 	"src/core/ConfigProvider.h"
 	"src/core/DbRowProvider.h"
 	"src/core/FileHeader.h"
@@ -117,6 +120,20 @@ set(NXTCache_SOURCES
 	"src/gzip/decompress.hpp"
 	"src/gzip/utils.hpp"
 	"src/gzip/version.hpp"
+	"src/network/HttpClient.cpp"
+	"src/network/HttpClient.h"
+	"src/network/Js5Archive.cpp"
+	"src/network/Js5Archive.h"
+	"src/network/Js5Cache.cpp"
+	"src/network/Js5Cache.h"
+	"src/network/Js5Compression.cpp"
+	"src/network/Js5Compression.h"
+	"src/network/Js5Config.cpp"
+	"src/network/Js5Config.h"
+	"src/network/Js5Index.cpp"
+	"src/network/Js5Index.h"
+	"src/network/Js5Socket.cpp"
+	"src/network/Js5Socket.h"
 )
 
 add_library(NXTCache STATIC)
@@ -135,6 +152,9 @@ target_include_directories(NXTCache PUBLIC
 target_link_libraries(NXTCache PUBLIC
 	unofficial::sqlite3::sqlite3
 	ZLIB::ZLIB
+	BZip2::BZip2
+	ws2_32
+	winhttp
 )
 
 # Target: nxtcache-dumper
