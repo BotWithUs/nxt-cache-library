@@ -94,6 +94,8 @@ Archive &Index::archive(int archiveId)
     if (err != 0)
     {
         std::printf("Failed to decode archive blob\n");
+        // Leave loaded=false so a later setFallback + retry can recover.
+        return archive;
     }
     archive.loaded = true;
     return archive;

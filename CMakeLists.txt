@@ -28,7 +28,10 @@ endif()
 option(NXTCACHE_BUILD_DUMPER "" ON)
 
 # vcpkg settings
-set(VCPKG_TARGET_TRIPLET x64-windows)
+# Static deps (sqlite3, zlib, bzip2) get baked into NXTCache.dll so it ships as
+# a single file. Use the -md variant to keep the dynamic CRT — required for
+# loading from the JVM (which links /MD) without CRT heap-ownership conflicts.
+set(VCPKG_TARGET_TRIPLET x64-windows-static-md)
 
 if(NOT DEFINED CMAKE_CXX_STANDARD)
     set(CMAKE_CXX_STANDARD 20)
@@ -84,22 +87,22 @@ find_package(BZip2 REQUIRED)
 
 include(FetchContent)
 
-if(NXTCACHE_BUILD_DUMPER) # build-dumper
-	message(STATUS "Fetching nlohmann_json (v3.11.3)...")
-	FetchContent_Declare(nlohmann_json
-		GIT_REPOSITORY
-			"https://github.com/nlohmann/json.git"
-		GIT_TAG
-			v3.11.3
-		GIT_SHALLOW
-			ON
-	)
-	FetchContent_MakeAvailable(nlohmann_json)
+message(STATUS "Fetching nlohmann_json (v3.11.3)...")
+FetchContent_Declare(nlohmann_json
+	GIT_REPOSITORY
+		"https://github.com/nlohmann/json.git"
+	GIT_TAG
+		v3.11.3
+	GIT_SHALLOW
+		ON
+)
+FetchContent_MakeAvailable(nlohmann_json)
 
-endif()
 # Target: NXTCache
 set(NXTCache_SOURCES
 	cmake.toml
+	"src/c_api/nxtcache_c.cpp"
+	"src/c_api/nxtcache_c.h"
 	"src/config_types/ScriptVarType.cpp"
 	"src/config_types/ScriptVarType.h"
 	"src/config_types/Types.cpp"
@@ -115,6 +118,8 @@ set(NXTCache_SOURCES
 	"src/core/RSBuffer.h"
 	"src/core/RSCache.cpp"
 	"src/core/RSCache.h"
+	"src/core/TypeMappings.h"
+	"src/dumper/Json.h"
 	"src/gzip/compress.hpp"
 	"src/gzip/config.hpp"
 	"src/gzip/decompress.hpp"
@@ -153,6 +158,7 @@ target_link_libraries(NXTCache PUBLIC
 	unofficial::sqlite3::sqlite3
 	ZLIB::ZLIB
 	BZip2::BZip2
+	nlohmann_json::nlohmann_json
 	ws2_32
 	winhttp
 )

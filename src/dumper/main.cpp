@@ -4,6 +4,7 @@
 #include "core/DbRowProvider.h"
 #include "core/Index.h"
 #include "core/RSCache.h"
+#include "core/TypeMappings.h"
 #include "dumper/Json.h"
 #include "network/Js5Cache.h"
 
@@ -26,32 +27,7 @@ using json = nlohmann::json;
 
 namespace {
 
-struct TypeMapping
-{
-    std::string name;
-    int indexId;
-    int archiveId;  // -1 indicates sharded layout
-    int shift;
-};
-
-// Defaults match the common NXT/RS3 cache layout. Override with --index/--archive/--shift
-// when targeting a different revision.
-const std::map<std::string, TypeMapping> kDefaults = {
-    {"npc",      {"npc",      18, -1,  7}},
-    {"item",     {"item",     19, -1,  8}},
-    {"loc",      {"loc",      16, -1,  8}},
-    {"seq",      {"seq",      20, -1,  7}},
-    {"varbit",   {"varbit",   22, -1, 10}},
-    {"enum",     {"enum",     17, -1,  8}},
-    {"struct",   {"struct",   26, -1, 10}},
-    {"inv",      {"inv",       2,  5,  0}},
-    {"param",    {"param",     2, 11,  0}},
-    {"quest",    {"quest",     2, 35,  0}},
-    {"underlay", {"underlay",  2,  1,  0}},
-    {"overlay",  {"overlay",   2,  4,  0}},
-    {"worldmap", {"worldmap", 23,  0,  0}},
-    {"dbrow",    {"dbrow",     2, 41,  0}},
-};
+using nxt::TypeMapping;
 
 void usage(const char *prog)
 {
@@ -283,6 +259,7 @@ int main(int argc, char **argv)
         return 2;
     }
 
+    const auto &kDefaults = nxt::typeDefaults();
     auto it = kDefaults.find(typeName);
     if (it == kDefaults.end())
     {
