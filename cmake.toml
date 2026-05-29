@@ -48,6 +48,7 @@ type = "shared"
 sources = [
     "src/core/*.cpp",
     "src/config_types/*.cpp",
+    "src/maps/*.cpp",
     "src/network/*.cpp",
     "src/c_api/*.cpp",
 ]
@@ -55,6 +56,7 @@ headers = [
     "src/core/*.h",
     "src/gzip/*.hpp",
     "src/config_types/*.h",
+    "src/maps/*.h",
     "src/network/*.h",
     "src/c_api/*.h",
     "src/dumper/Json.h",

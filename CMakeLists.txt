@@ -125,6 +125,8 @@ set(NXTCache_SOURCES
 	"src/gzip/decompress.hpp"
 	"src/gzip/utils.hpp"
 	"src/gzip/version.hpp"
+	"src/maps/MapSquare.cpp"
+	"src/maps/MapSquare.h"
 	"src/network/HttpClient.cpp"
 	"src/network/HttpClient.h"
 	"src/network/Js5Archive.cpp"

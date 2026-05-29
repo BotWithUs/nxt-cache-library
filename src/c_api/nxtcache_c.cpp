@@ -9,6 +9,7 @@
 #include "core/RSCache.h"
 #include "core/TypeMappings.h"
 #include "dumper/Json.h"
+#include "maps/MapSquare.h"
 #include "network/Js5Cache.h"
 
 #include <nlohmann/json.hpp>
@@ -29,6 +30,7 @@ struct Cache
     std::unique_ptr<CacheSource> source;
     RSCache *local{nullptr};   // non-owning, only set if `source` is RSCache
     std::unique_ptr<DbRowProvider> dbProvider;
+    std::unique_ptr<maps::DefCache> mapDefs;   // memoizes loc/overlay defs across clip calls
 };
 
 thread_local std::string g_lastError;
@@ -323,6 +325,53 @@ nxt_result nxt_read_file_raw(nxt_cache *handle,
     {
         setError(std::string("read_file_raw failed: ") + e.what());
         return NXT_ERR_IO;
+    }
+}
+
+nxt_result nxt_get_mapsquare_clip(nxt_cache *handle, int square_x, int square_y,
+                                  uint32_t **out_clip, size_t *out_count,
+                                  uint8_t *out_plane_mask)
+{
+    if (!handle || !out_clip || !out_count)
+    {
+        setError("invalid argument: null handle or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    auto *c = reinterpret_cast<Cache *>(handle);
+    try
+    {
+        if (!c->mapDefs)
+        {
+            c->mapDefs = std::make_unique<maps::DefCache>();
+        }
+        maps::MapSquareClip clip;
+        if (!maps::buildMapSquareClip(*c->source, square_x, square_y, *c->mapDefs, clip))
+        {
+            setError("map square " + std::to_string(square_x) + "," + std::to_string(square_y)
+                     + " not present");
+            return NXT_ERR_NOT_FOUND;
+        }
+        const size_t words = static_cast<size_t>(maps::MapSquareClip::PLANES)
+                             * maps::MapSquareClip::SIZE * maps::MapSquareClip::SIZE;
+        auto *buf = static_cast<uint32_t *>(std::malloc(words * sizeof(uint32_t)));
+        if (!buf)
+        {
+            setError("malloc failed");
+            return NXT_ERR_INTERNAL;
+        }
+        std::memcpy(buf, clip.flags, words * sizeof(uint32_t));
+        *out_clip = buf;
+        *out_count = words;
+        if (out_plane_mask)
+        {
+            *out_plane_mask = clip.planeMask;
+        }
+        return NXT_OK;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("get_mapsquare_clip failed: ") + e.what());
+        return NXT_ERR_DECODE;
     }
 }
 

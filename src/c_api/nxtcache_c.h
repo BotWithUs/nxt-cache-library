@@ -82,6 +82,22 @@ NXT_API nxt_result nxt_read_file_raw(nxt_cache *cache,
                                      int index_id, int archive_id, int file_id,
                                      uint8_t **out_data, size_t *out_size);
 
+/* ---- Map collision ------------------------------------------------------
+ *
+ * Decode the directional clip grid for one map square (cache index 5). The
+ * square is addressed by its square coordinates (world tile / 64). The output
+ * is a freshly allocated, packed [4][64][64] array of uint32 clip words:
+ * plane-major, then x (west-east, 0..63), then y (south-north, 0..63).
+ * *out_count is the word count (always 4*64*64 = 16384). The caller frees
+ * *out_clip with nxt_free. When out_plane_mask is non-NULL it receives a mask
+ * with bit p set if plane p holds any non-zero tile. Returns NXT_ERR_NOT_FOUND
+ * if the square is absent from the cache. Clip flag bit meanings are documented
+ * in maps/MapSquare.h (ClipFlag).
+ */
+NXT_API nxt_result nxt_get_mapsquare_clip(nxt_cache *cache, int square_x, int square_y,
+                                          uint32_t **out_clip, size_t *out_count,
+                                          uint8_t *out_plane_mask);
+
 /* ---- Config-type getters (single-entry JSON) ---------------------------
  *
  * Each function returns a NUL-terminated UTF-8 JSON document describing one
