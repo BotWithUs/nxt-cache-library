@@ -82,6 +82,13 @@ NXT_API nxt_result nxt_read_file_raw(nxt_cache *cache,
                                      int index_id, int archive_id, int file_id,
                                      uint8_t **out_data, size_t *out_size);
 
+/* List every archive id present in an index. *out_ids is a freshly allocated
+   array of *out_count ints (caller frees with nxt_free); *out_count may be 0
+   (the pointer is still non-NULL and must be freed). For the map index (5)
+   each id encodes a square: square_x = id & 0x7F, square_y = id >> 7. */
+NXT_API nxt_result nxt_list_archive_ids(nxt_cache *cache, int index_id,
+                                        int **out_ids, size_t *out_count);
+
 /* ---- Map collision ------------------------------------------------------
  *
  * Decode the directional clip grid for one map square (cache index 5). The

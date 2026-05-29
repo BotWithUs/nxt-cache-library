@@ -20,6 +20,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -324,6 +325,42 @@ nxt_result nxt_read_file_raw(nxt_cache *handle,
     catch (const std::exception &e)
     {
         setError(std::string("read_file_raw failed: ") + e.what());
+        return NXT_ERR_IO;
+    }
+}
+
+nxt_result nxt_list_archive_ids(nxt_cache *handle, int index_id,
+                                int **out_ids, size_t *out_count)
+{
+    if (!handle || !out_ids || !out_count)
+    {
+        setError("invalid argument: null handle or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    auto *c = reinterpret_cast<Cache *>(handle);
+    try
+    {
+        std::vector<int> ids = c->source->archiveIds(index_id);
+        size_t n = ids.size();
+        // malloc(0) may return NULL; allocate at least one slot so the caller
+        // always receives a freeable, non-NULL pointer.
+        auto *buf = static_cast<int *>(std::malloc((n != 0 ? n : 1) * sizeof(int)));
+        if (!buf)
+        {
+            setError("malloc failed");
+            return NXT_ERR_INTERNAL;
+        }
+        if (n != 0)
+        {
+            std::memcpy(buf, ids.data(), n * sizeof(int));
+        }
+        *out_ids = buf;
+        *out_count = n;
+        return NXT_OK;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("list_archive_ids failed: ") + e.what());
         return NXT_ERR_IO;
     }
 }
