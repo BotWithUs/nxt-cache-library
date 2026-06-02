@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <unordered_map>
+#include <vector>
 
 class CacheSource;
 
@@ -41,6 +42,41 @@ enum ClipFlag : uint32_t
     CLIP_CLIMBOVER        = 0x20000000,
 };
 
+// Which interaction class a crossing loc belongs to. Mirrors the NXT_CROSSING_*
+// macros in the C ABI; keep the numeric values in lock-step.
+enum class CrossingKind : uint8_t
+{
+    Door        = 0,  // shape 0-3/9 wall with interactType + an option ("Open"/"Enter")
+    ClimbOver   = 1,  // climb-over / cross / squeeze / jump shortcut (same-plane)
+    PlaneChange = 2,  // ladder / stair: a climb-up/down option (vertical)
+    Agility     = 3,  // agility-cursor shortcut
+};
+
+// One interactable scenery crossing emitted alongside the clip grid. Carries the
+// loc id + geometry WorldWalker needs to bake a Transition the executor can click;
+// the bare CLIP_* bits cannot name the loc. Layout is a fixed 16-byte POD so the C
+// ABI's nxt_crossing aliases it byte-for-byte (memcpy across the boundary).
+struct Crossing
+{
+    int32_t  objectId;     // loc type id to interact with
+    uint16_t worldX;       // absolute world tile (square base + local)
+    uint16_t worldY;
+    uint8_t  plane;        // effective plane (bridge-adjusted)
+    uint8_t  shape;        // RT4 loc shape
+    uint8_t  rotation;     // 0..3
+    uint8_t  kind;         // CrossingKind
+    uint8_t  sizeX;        // footprint after rotation (>= 1)
+    uint8_t  sizeY;
+    uint8_t  optionIndex;  // 0-based interactive option slot, 0xFF if none
+    uint8_t  climbDir;     // PlaneChange only: bit0 up, bit1 down; else 0
+};
+
+static_assert(sizeof(Crossing) == 16, "Crossing must stay a 16-byte POD (C-ABI aliased)");
+
+// Climb-direction bits for Crossing::climbDir.
+inline constexpr uint8_t kClimbUp   = 0x1;
+inline constexpr uint8_t kClimbDown = 0x2;
+
 // Decoded clip grid for one map square (index 5). Layout is plane-major, then x
 // (west-east, 0..63), then y (south-north, 0..63), matching the cache's own tile
 // addressing. planeMask has bit p set when plane p holds any non-zero tile.
@@ -67,7 +103,13 @@ struct DefCache
 // overlays (index 2/archive 4) through defs, and writes the directional clip grid
 // into outClip. Returns false (leaving outClip zeroed) when the square is absent
 // from the cache; an empty-but-present square returns true with planeMask == 0.
+//
+// When outCrossings is non-null it is cleared then filled with one Crossing per
+// interactable scenery crossing (door / climb-over / ladder-stair / agility) found
+// in the square — the clip-only path (outCrossings == nullptr) is byte-for-byte
+// unchanged.
 bool buildMapSquareClip(CacheSource &source, int squareX, int squareY,
-                        DefCache &defs, MapSquareClip &outClip);
+                        DefCache &defs, MapSquareClip &outClip,
+                        std::vector<Crossing> *outCrossings = nullptr);
 
 }  // namespace maps

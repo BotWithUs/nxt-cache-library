@@ -412,6 +412,56 @@ nxt_result nxt_get_mapsquare_clip(nxt_cache *handle, int square_x, int square_y,
     }
 }
 
+static_assert(sizeof(nxt_crossing) == sizeof(maps::Crossing),
+              "nxt_crossing must alias maps::Crossing byte-for-byte");
+
+nxt_result nxt_get_mapsquare_crossings(nxt_cache *handle, int square_x, int square_y,
+                                       nxt_crossing **out_crossings, size_t *out_count)
+{
+    if (!handle || !out_crossings || !out_count)
+    {
+        setError("invalid argument: null handle or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    *out_crossings = nullptr;
+    *out_count = 0;
+    auto *c = reinterpret_cast<Cache *>(handle);
+    try
+    {
+        if (!c->mapDefs)
+        {
+            c->mapDefs = std::make_unique<maps::DefCache>();
+        }
+        maps::MapSquareClip clip;
+        std::vector<maps::Crossing> crossings;
+        if (!maps::buildMapSquareClip(*c->source, square_x, square_y, *c->mapDefs, clip, &crossings))
+        {
+            setError("map square " + std::to_string(square_x) + "," + std::to_string(square_y)
+                     + " not present");
+            return NXT_ERR_NOT_FOUND;
+        }
+        if (crossings.empty())
+        {
+            return NXT_OK;
+        }
+        auto *buf = static_cast<nxt_crossing *>(std::malloc(crossings.size() * sizeof(nxt_crossing)));
+        if (!buf)
+        {
+            setError("malloc failed");
+            return NXT_ERR_INTERNAL;
+        }
+        std::memcpy(buf, crossings.data(), crossings.size() * sizeof(nxt_crossing));
+        *out_crossings = buf;
+        *out_count = crossings.size();
+        return NXT_OK;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("get_mapsquare_crossings failed: ") + e.what());
+        return NXT_ERR_DECODE;
+    }
+}
+
 #define NXT_GETTER(suffix, T) \
     nxt_result nxt_get_##suffix##_json(nxt_cache *h, int id, char **out, size_t *len) \
     { return getJsonGeneric<T>(h, #suffix, id, out, len); }

@@ -105,6 +105,48 @@ NXT_API nxt_result nxt_get_mapsquare_clip(nxt_cache *cache, int square_x, int sq
                                           uint32_t **out_clip, size_t *out_count,
                                           uint8_t *out_plane_mask);
 
+/* ---- Map crossings ------------------------------------------------------
+ *
+ * Interactable scenery crossings (doors, climb-overs, ladders/stairs, agility
+ * shortcuts) found in one map square. Unlike the clip grid these carry the loc
+ * id + geometry a navigation consumer needs to bake an interactable transition;
+ * the CLIP_* bits alone cannot name the loc. Coordinates are absolute world
+ * tiles. `option_index` is the 0-based right-click option slot to invoke
+ * (0xFF = none). `climb_dir` is meaningful only for NXT_CROSSING_PLANE_CHANGE:
+ * bit0 = climbs up, bit1 = climbs down.
+ */
+
+#define NXT_CROSSING_DOOR         0
+#define NXT_CROSSING_CLIMBOVER    1
+#define NXT_CROSSING_PLANE_CHANGE 2
+#define NXT_CROSSING_AGILITY      3
+
+#define NXT_CLIMB_UP   0x1
+#define NXT_CLIMB_DOWN 0x2
+
+typedef struct nxt_crossing
+{
+    int32_t  object_id;
+    uint16_t world_x;
+    uint16_t world_y;
+    uint8_t  plane;
+    uint8_t  shape;
+    uint8_t  rotation;
+    uint8_t  kind;          /* NXT_CROSSING_* */
+    uint8_t  size_x;
+    uint8_t  size_y;
+    uint8_t  option_index;  /* 0-based option slot, 0xFF if none */
+    uint8_t  climb_dir;     /* PLANE_CHANGE only: bit0 up, bit1 down */
+} nxt_crossing;
+
+/* Decode the interactable crossings for one map square (cache index 5). On
+   success *out_crossings is a freshly allocated array of *out_count records
+   (free with nxt_free); an empty square yields *out_crossings == NULL and
+   *out_count == 0 with NXT_OK. Returns NXT_ERR_NOT_FOUND if the square is absent.
+   Crossing kind/field meanings are documented above and mirror maps::Crossing. */
+NXT_API nxt_result nxt_get_mapsquare_crossings(nxt_cache *cache, int square_x, int square_y,
+                                               nxt_crossing **out_crossings, size_t *out_count);
+
 /* ---- Config-type getters (single-entry JSON) ---------------------------
  *
  * Each function returns a NUL-terminated UTF-8 JSON document describing one

@@ -439,6 +439,148 @@ bool hasAgilityCursor(const LocationType &loc)
     return false;
 }
 
+// 0xFF when no interactive option slot applies — the crossing carries no clickable
+// option (e.g. a varbit-only door). Otherwise the 0-based option slot.
+constexpr uint8_t kNoOption = 0xFF;
+
+uint8_t firstOptionIndex(const LocationType &loc)
+{
+    for (std::size_t i = 0; i < loc.options.size(); ++i)
+    {
+        if (!loc.options[i].empty())
+        {
+            return static_cast<uint8_t>(i);
+        }
+    }
+    return kNoOption;
+}
+
+uint8_t climbOverOptionIndex(const LocationType &loc)
+{
+    for (std::size_t i = 0; i < loc.options.size(); ++i)
+    {
+        const std::string &opt = loc.options[i];
+        if (opt.empty())
+        {
+            continue;
+        }
+        if ((containsCaseInsensitive(opt, "climb") && isClimbOver(opt))
+            || containsCaseInsensitive(opt, "cross")
+            || containsCaseInsensitive(opt, "squeeze")
+            || containsCaseInsensitive(opt, "jump"))
+        {
+            return static_cast<uint8_t>(i);
+        }
+    }
+    return firstOptionIndex(loc);
+}
+
+uint8_t planeChangeOptionIndex(const LocationType &loc)
+{
+    for (std::size_t i = 0; i < loc.options.size(); ++i)
+    {
+        const std::string &opt = loc.options[i];
+        if (opt.empty())
+        {
+            continue;
+        }
+        const bool climb = containsCaseInsensitive(opt, "climb");
+        if (climb && isClimbOver(opt))
+        {
+            continue;
+        }
+        if (climb || containsCaseInsensitive(opt, "ascend")
+            || containsCaseInsensitive(opt, "descend"))
+        {
+            return static_cast<uint8_t>(i);
+        }
+    }
+    return firstOptionIndex(loc);
+}
+
+uint8_t agilityOptionIndex(const LocationType &loc)
+{
+    constexpr std::size_t cursorCount = sizeof(loc.cursors) / sizeof(loc.cursors[0]);
+    for (std::size_t i = 0; i < cursorCount; ++i)
+    {
+        if (loc.cursors[i] == kAgilityCursor)
+        {
+            return static_cast<uint8_t>(i);
+        }
+    }
+    return firstOptionIndex(loc);
+}
+
+// bit0 (kClimbUp) / bit1 (kClimbDown) per the loc's climb options. Mirrors the
+// prior nav stack's classifyClimbOptions: "up"/"ascend" => up, "down"/"descend"
+// => down, an ambiguous "climb" => both. Climb-over options are excluded.
+uint8_t classifyClimbDir(const LocationType &loc)
+{
+    uint8_t dir = 0;
+    for (const std::string &opt : loc.options)
+    {
+        if (opt.empty())
+        {
+            continue;
+        }
+        const bool climb = containsCaseInsensitive(opt, "climb");
+        if (climb && isClimbOver(opt))
+        {
+            continue;
+        }
+        const bool ascend = containsCaseInsensitive(opt, "ascend");
+        const bool descend = containsCaseInsensitive(opt, "descend");
+        if (!climb && !ascend && !descend)
+        {
+            continue;
+        }
+        if (containsCaseInsensitive(opt, "up") || ascend)
+        {
+            dir |= kClimbUp;
+        }
+        else if (containsCaseInsensitive(opt, "down") || descend)
+        {
+            dir |= kClimbDown;
+        }
+        else
+        {
+            dir |= static_cast<uint8_t>(kClimbUp | kClimbDown);
+        }
+    }
+    return dir;
+}
+
+// Append a Crossing for this placement when a sink is provided. worldBaseX/Y are
+// the square's south-west world-tile origin (squareX * 64, squareY * 64).
+void emitCrossing(std::vector<Crossing> *outCrossings, CrossingKind kind,
+                  const LocationType &locType, const LocPlacement &loc, int effectivePlane,
+                  int worldBaseX, int worldBaseY, uint8_t optionIndex, uint8_t climbDir)
+{
+    if (outCrossings == nullptr)
+    {
+        return;
+    }
+    int sizeX = locType.sizeX > 0 ? locType.sizeX : 1;
+    int sizeY = locType.sizeY > 0 ? locType.sizeY : 1;
+    if (loc.rotation == 1 || loc.rotation == 3)
+    {
+        std::swap(sizeX, sizeY);
+    }
+    Crossing c{};
+    c.objectId    = loc.objectId;
+    c.worldX      = static_cast<uint16_t>(worldBaseX + loc.localX);
+    c.worldY      = static_cast<uint16_t>(worldBaseY + loc.localY);
+    c.plane       = static_cast<uint8_t>(effectivePlane);
+    c.shape       = static_cast<uint8_t>(loc.shape);
+    c.rotation    = static_cast<uint8_t>(loc.rotation);
+    c.kind        = static_cast<uint8_t>(kind);
+    c.sizeX       = static_cast<uint8_t>(sizeX);
+    c.sizeY       = static_cast<uint8_t>(sizeY);
+    c.optionIndex = optionIndex;
+    c.climbDir    = climbDir;
+    outCrossings->push_back(c);
+}
+
 const LocationType *locDef(CacheSource &source, DefCache &defs, int objectId)
 {
     auto it = defs.locDefs.find(objectId);
@@ -521,19 +663,27 @@ void applyTerrain(MapSquareClip &clip, const TerrainData &terrain)
 }
 
 void applyPlacement(MapSquareClip &clip, const LocationType &locType,
-                    const LocPlacement &loc, int effectivePlane)
+                    const LocPlacement &loc, int effectivePlane,
+                    int worldBaseX, int worldBaseY, std::vector<Crossing> *outCrossings)
 {
     if (hasAgilityCursor(locType))
     {
         setClip(clip, effectivePlane, loc.localX, loc.localY, CLIP_AGILITY_SHORTCUT);
+        emitCrossing(outCrossings, CrossingKind::Agility, locType, loc, effectivePlane,
+                     worldBaseX, worldBaseY, agilityOptionIndex(locType), 0);
     }
     else if (hasClimbOverOption(locType))
     {
         setClip(clip, effectivePlane, loc.localX, loc.localY, CLIP_CLIMBOVER);
+        emitCrossing(outCrossings, CrossingKind::ClimbOver, locType, loc, effectivePlane,
+                     worldBaseX, worldBaseY, climbOverOptionIndex(locType), 0);
     }
     if (hasPlaneChangeOption(locType))
     {
         setClip(clip, effectivePlane, loc.localX, loc.localY, CLIP_PLANE_CHANGE);
+        emitCrossing(outCrossings, CrossingKind::PlaneChange, locType, loc, effectivePlane,
+                     worldBaseX, worldBaseY, planeChangeOptionIndex(locType),
+                     classifyClimbDir(locType));
     }
 
     if (locType.solidType == 0)
@@ -548,6 +698,8 @@ void applyPlacement(MapSquareClip &clip, const LocationType &locType,
         if (isDoor)
         {
             setClip(clip, effectivePlane, loc.localX, loc.localY, CLIP_DOOR);
+            emitCrossing(outCrossings, CrossingKind::Door, locType, loc, effectivePlane,
+                         worldBaseX, worldBaseY, firstOptionIndex(locType), 0);
         }
     }
     else if (loc.shape >= 9 && loc.shape <= 21)
@@ -562,6 +714,8 @@ void applyPlacement(MapSquareClip &clip, const LocationType &locType,
         if (loc.shape == 9 && isDoor)
         {
             setClip(clip, effectivePlane, loc.localX, loc.localY, CLIP_DOOR);
+            emitCrossing(outCrossings, CrossingKind::Door, locType, loc, effectivePlane,
+                         worldBaseX, worldBaseY, firstOptionIndex(locType), 0);
         }
     }
     else if (loc.shape == 22 && locType.solidType == 1)
@@ -572,7 +726,8 @@ void applyPlacement(MapSquareClip &clip, const LocationType &locType,
 
 void applyLocations(CacheSource &source, DefCache &defs, MapSquareClip &clip,
                     const TerrainData &terrain, bool hasTerrain,
-                    const std::vector<LocPlacement> &placements)
+                    const std::vector<LocPlacement> &placements,
+                    int worldBaseX, int worldBaseY, std::vector<Crossing> *outCrossings)
 {
     for (const LocPlacement &loc : placements)
     {
@@ -590,7 +745,7 @@ void applyLocations(CacheSource &source, DefCache &defs, MapSquareClip &clip,
         {
             continue;
         }
-        applyPlacement(clip, *locType, loc, effectivePlane);
+        applyPlacement(clip, *locType, loc, effectivePlane, worldBaseX, worldBaseY, outCrossings);
     }
 }
 
@@ -633,9 +788,14 @@ void computePlaneMask(MapSquareClip &clip)
 }  // namespace
 
 bool buildMapSquareClip(CacheSource &source, int squareX, int squareY,
-                        DefCache &defs, MapSquareClip &outClip)
+                        DefCache &defs, MapSquareClip &outClip,
+                        std::vector<Crossing> *outCrossings)
 {
     outClip = MapSquareClip{};
+    if (outCrossings != nullptr)
+    {
+        outCrossings->clear();
+    }
 
     int archiveId = (squareX & 0x7F) | (squareY << 7);
     Archive &archive = source.archive(kMapIndex, archiveId);
@@ -643,6 +803,9 @@ bool buildMapSquareClip(CacheSource &source, int squareX, int squareY,
     {
         return false;
     }
+
+    const int worldBaseX = squareX * MapSquareClip::SIZE;
+    const int worldBaseY = squareY * MapSquareClip::SIZE;
 
     TerrainData terrain{};
     bool hasTerrain = false;
@@ -667,7 +830,8 @@ bool buildMapSquareClip(CacheSource &source, int squareX, int squareY,
         {
             std::vector<LocPlacement> placements =
                 decodeLocationData(buffer.buffer + buffer.readPosition, buffer.remaining());
-            applyLocations(source, defs, outClip, terrain, hasTerrain, placements);
+            applyLocations(source, defs, outClip, terrain, hasTerrain, placements,
+                           worldBaseX, worldBaseY, outCrossings);
         }
     }
 
