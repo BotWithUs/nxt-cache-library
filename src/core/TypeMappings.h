@@ -24,7 +24,7 @@ inline const std::map<std::string, TypeMapping> &typeDefaults()
         {"item",     {"item",     19, -1,  8}},
         {"loc",      {"loc",      16, -1,  8}},
         {"seq",      {"seq",      20, -1,  7}},
-        {"varbit",   {"varbit",   22, -1, 10}},
+        {"varbit",   {"varbit",    2, 69,  0}},
         {"enum",     {"enum",     17, -1,  8}},
         {"struct",   {"struct",   26, -1, 10}},
         {"inv",      {"inv",       2,  5,  0}},
