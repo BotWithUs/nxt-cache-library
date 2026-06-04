@@ -1339,7 +1339,7 @@ void QuestType::decode(RSBuffer &buffer)
         }
         else if (opcode == 5)
         {
-            buffer.skip(2);
+            parentQuestId = buffer.readUnsignedShort();
         }
         else if (opcode == 6)
         {

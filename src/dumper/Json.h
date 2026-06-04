@@ -262,6 +262,7 @@ inline json toJson(const QuestType &t)
         {"id", t.id},
         {"name", t.name},
         {"listName", t.listName},
+        {"parentQuestId", t.parentQuestId},
         {"category", t.category},
         {"difficulty", t.difficulty},
         {"membersOnly", t.membersOnly},

@@ -254,6 +254,7 @@ public:
     int id;
     std::string name;
     std::string listName;
+    int parentQuestId{-1};
     int category{};
     int difficulty{};
     bool membersOnly{};
