@@ -32,6 +32,7 @@ public:
 
     std::vector<int> archiveIds(int indexId) override;
     Archive &archive(int indexId, int archiveId) override;
+    std::vector<int> fileIds(int indexId, int archiveId) override;
     void evictArchive(int indexId, int archiveId) override;
 
     // Opens a connection to the live JS5 servers and installs a fallback

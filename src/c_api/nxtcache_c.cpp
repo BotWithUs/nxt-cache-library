@@ -18,9 +18,11 @@
 #include "network/Js5Config.h"
 #include "network/Js5Index.h"
 #include "network/Js5Socket.h"
+#include "render/IconRenderer.h"
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
@@ -218,6 +220,37 @@ json dumpAll(CacheSource &cs, const nxt::TypeMapping &m, int limit)
         }
     }
     return out;
+}
+
+// Enumerate every entry id of a config type from the reference tables alone
+// (no archive blob decode). Sharded layouts combine (archiveId, fileId) into the
+// entry id; single-archive layouts use the file ids directly; interfaces key one
+// archive per id. Result is ascending.
+std::vector<int> enumerateTypeIds(CacheSource &cs, const std::string &typeName,
+                                  const nxt::TypeMapping &m)
+{
+    std::vector<int> ids;
+    if (typeName == "if")
+    {
+        // One archive == one interface id; files are components, not entries.
+        ids = cs.archiveIds(m.indexId);
+    }
+    else if (m.archiveId == -1)
+    {
+        for (int aid : cs.archiveIds(m.indexId))
+        {
+            for (int fid : cs.fileIds(m.indexId, aid))
+            {
+                ids.push_back((aid << m.shift) | fid);
+            }
+        }
+    }
+    else
+    {
+        ids = cs.fileIds(m.indexId, m.archiveId);
+    }
+    std::sort(ids.begin(), ids.end());
+    return ids;
 }
 
 }  // namespace
@@ -1022,6 +1055,81 @@ nxt_result nxt_get_model_faces(nxt_cache *handle, int id,
     }
 }
 
+/* ---- Inventory icon rendering ------------------------------------------- */
+
+nxt_result nxt_render_item_icon(nxt_cache *handle, int id,
+                                int width, int height, int supersample,
+                                uint8_t **out_rgba, size_t *out_count)
+{
+    if (!handle || !out_rgba || !out_count)
+    {
+        setError("invalid argument: null handle or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    *out_rgba = nullptr;
+    *out_count = 0;
+    if (width <= 0 || height <= 0 || width > 4096 || height > 4096)
+    {
+        setError("invalid icon dimensions (expected 1..4096)");
+        return NXT_ERR_INVALID;
+    }
+    auto *c = reinterpret_cast<Cache *>(handle);
+    try
+    {
+        auto item = decodeByName<ItemType>(*c->source, "item", id);
+        if (!item)
+        {
+            setError("item " + std::to_string(id) + " not found");
+            return NXT_ERR_NOT_FOUND;
+        }
+        if (item->modelID <= 0)
+        {
+            setError("item " + std::to_string(id) + " has no inventory model");
+            return NXT_ERR_NOT_FOUND;
+        }
+        auto model = decodeByName<ModelType>(*c->source, "model", item->modelID);
+        if (!model)
+        {
+            setError("inventory model " + std::to_string(item->modelID) + " not found");
+            return NXT_ERR_NOT_FOUND;
+        }
+
+        nxtrender::IconParams p;
+        p.zoom2d    = item->modelZoom;
+        p.xan2d     = item->modelRotationX;
+        p.yan2d     = item->modelRotationY;
+        p.zan2d     = item->modelAngleZ;
+        p.offsetX2d = item->modelOffsetX;
+        p.offsetY2d = item->modelOffsetY;
+        p.resizeX   = item->resizeX;
+        p.resizeY   = item->resizeY;
+        p.resizeZ   = item->resizeZ;
+        p.ambient   = item->ambient;
+        p.contrast  = item->contrast;
+        p.origColors = item->originalColors;
+        p.replColors = item->replacementColors;
+        p.supersample = supersample <= 0 ? 4 : supersample;
+
+        auto icon = nxtrender::renderModelIcon(*model, p, width, height);
+        const size_t n = icon.rgba.size();
+        auto *buf = static_cast<uint8_t *>(std::malloc(n != 0 ? n : 1));
+        if (!buf)
+        {
+            setError("malloc failed");
+            return NXT_ERR_INTERNAL;
+        }
+        if (n != 0) std::memcpy(buf, icon.rgba.data(), n);
+        *out_rgba = buf;
+        *out_count = n;
+        return NXT_OK;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("render_item_icon failed: ") + e.what());
+        return NXT_ERR_DECODE;
+    }
+}
+
 nxt_result nxt_get_json(nxt_cache *handle, const char *type_name, int id,
                         char **out_json, size_t *out_len)
 {
@@ -1149,6 +1257,49 @@ nxt_result nxt_dump_all_json(nxt_cache *handle, const char *type_name, int limit
     {
         setError(std::string("dump_all failed: ") + e.what());
         return NXT_ERR_DECODE;
+    }
+}
+
+nxt_result nxt_list_type_ids(nxt_cache *handle, const char *type_name,
+                             int **out_ids, size_t *out_count)
+{
+    if (!handle || !type_name || !out_ids || !out_count)
+    {
+        setError("invalid argument: null handle or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    *out_ids = nullptr;
+    *out_count = 0;
+    auto *c = reinterpret_cast<Cache *>(handle);
+    std::string t(type_name);
+    const auto &defs = nxt::typeDefaults();
+    auto it = defs.find(t);
+    if (it == defs.end())
+    {
+        setError("unknown type: " + t);
+        return NXT_ERR_INVALID;
+    }
+    try
+    {
+        std::vector<int> ids = enumerateTypeIds(*c->source, t, it->second);
+        size_t n = ids.size();
+        // malloc(0) may return NULL; allocate at least one slot so the caller
+        // always receives a freeable, non-NULL pointer.
+        auto *buf = static_cast<int *>(std::malloc((n != 0 ? n : 1) * sizeof(int)));
+        if (!buf)
+        {
+            setError("malloc failed");
+            return NXT_ERR_INTERNAL;
+        }
+        if (n != 0) std::memcpy(buf, ids.data(), n * sizeof(int));
+        *out_ids = buf;
+        *out_count = n;
+        return NXT_OK;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("list_type_ids failed: ") + e.what());
+        return NXT_ERR_IO;
     }
 }
 

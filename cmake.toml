@@ -51,6 +51,7 @@ sources = [
     "src/config_types/*.cpp",
     "src/maps/*.cpp",
     "src/network/*.cpp",
+    "src/render/*.cpp",
     "src/c_api/*.cpp",
 ]
 headers = [
@@ -59,6 +60,7 @@ headers = [
     "src/config_types/*.h",
     "src/maps/*.h",
     "src/network/*.h",
+    "src/render/*.h",
     "src/c_api/*.h",
     "src/dumper/Json.h",
 ]

@@ -23,6 +23,7 @@ public:
 
     std::vector<int> archiveIds(int indexId) override;
     Archive &archive(int indexId, int archiveId) override;
+    std::vector<int> fileIds(int indexId, int archiveId) override;
 
     const ServerConfig &serverConfig() const { return config_; }
 

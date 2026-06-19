@@ -281,6 +281,28 @@ NXT_API nxt_result nxt_get_model_colors(nxt_cache *cache, int id,
 NXT_API nxt_result nxt_get_model_faces(nxt_cache *cache, int id,
                                        nxt_model_face **out_faces, size_t *out_count);
 
+/* ---- Inventory icon rendering ------------------------------------------
+ *
+ * Software-render an item's inventory/container icon (the picture shown in a
+ * bank/inventory slot) into an RGBA8888 buffer (R,G,B,A, row-major, top-left
+ * origin, *out_count == width*height*4; free with nxt_free). The item's
+ * inventory model is resolved (base model only — noted/placeholder/stacked
+ * variants are NOT combined), recoloured (op40) and lit per the item's 2D
+ * parameters (zoom/rotation/offset/ambient/contrast), then rasterised.
+ *
+ * Fidelity: the real client renders these on the GPU (deferred G-buffer + SSAO
+ * + PBR). This CPU renderer targets a *recognisable* icon — correct model,
+ * orientation, Jagex-HSL colours and approximate diffuse shading — not a
+ * pixel-exact match; framing is auto-fit to the requested size. Transparent
+ * background pixels have alpha 0.
+ *
+ * width/height are the output dimensions (e.g. 36x32 for a slot-sized icon).
+ * supersample is the SSAA factor for edge quality (1..8; pass 0 for the
+ * default of 4). Returns NXT_ERR_NOT_FOUND if the item or its model is absent. */
+NXT_API nxt_result nxt_render_item_icon(nxt_cache *cache, int id,
+                                        int width, int height, int supersample,
+                                        uint8_t **out_rgba, size_t *out_count);
+
 /* Generic dispatch — useful for languages with reflection. Same return
    contract as the per-type getters. type_name is one of: "npc", "item",
    "loc", "seq", "varbit", "enum", "struct", "inv", "param", "quest",
@@ -293,6 +315,20 @@ NXT_API nxt_result nxt_get_json(nxt_cache *cache, const char *type_name, int id,
 NXT_API nxt_result nxt_dump_all_json(nxt_cache *cache, const char *type_name,
                                      int limit_or_neg1,
                                      char **out_json, size_t *out_len);
+
+/* Cheap id enumeration — list every entry id of a config type WITHOUT decoding
+   the entries. This is the inexpensive companion to nxt_dump_all_json: ids come
+   straight from the index reference tables, so no archive data blob is fetched
+   or decompressed. *out_ids is a freshly allocated, ascending array of
+   *out_count ints (caller frees with nxt_free); *out_count may be 0 (the pointer
+   is still non-NULL and must be freed).
+
+   type_name is any name nxt_get_json accepts ("npc", "item", "loc", "seq",
+   "varbit", "enum", "struct", "inv", "param", "quest", "underlay", "overlay",
+   "worldmap", "dbrow", "model", "sprite", "if"). For "if" each id is an
+   interface (archive) id. Returns NXT_ERR_INVALID for an unknown type_name. */
+NXT_API nxt_result nxt_list_type_ids(nxt_cache *cache, const char *type_name,
+                                     int **out_ids, size_t *out_count);
 
 #ifdef __cplusplus
 }  /* extern "C" */

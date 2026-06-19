@@ -149,6 +149,8 @@ set(NXTCache_SOURCES
 	"src/network/Js5Index.h"
 	"src/network/Js5Socket.cpp"
 	"src/network/Js5Socket.h"
+	"src/render/IconRenderer.cpp"
+	"src/render/IconRenderer.h"
 )
 
 add_library(NXTCache SHARED)

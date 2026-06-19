@@ -106,6 +106,70 @@ static void check_model(nxt_cache *c, int id)
     }
 }
 
+/* Validate the inventory-icon renderer: buffer must be width*height*4 and a
+   real item should produce some opaque (rendered) pixels. Returns fail count. */
+static int check_item_icon(nxt_cache *c, int id)
+{
+    uint8_t *rgba = NULL;
+    size_t n = 0;
+    const int w = 48, h = 48;
+    nxt_result rc = nxt_render_item_icon(c, id, w, h, 4, &rgba, &n);
+    if (rc != NXT_OK)
+    {
+        fprintf(stderr, "FAIL item_icon %d: rc=%d err=%s\n", id, rc, nxt_last_error());
+        return 1;
+    }
+    int fails = 0;
+    if (n != (size_t)w * (size_t)h * 4)
+    {
+        fprintf(stderr, "FAIL icon %d: count=%zu but w*h*4=%d\n", id, n, w * h * 4);
+        fails++;
+    }
+    size_t opaque = 0;
+    for (size_t i = 3; i < n; i += 4) if (rgba[i] > 0) opaque++;
+    printf("  item_icon %-5d  %dx%d  %zu bytes  %zu rendered px  %s\n",
+           id, w, h, n, opaque, opaque > 0 ? "OK" : "FAIL (empty)");
+    if (opaque == 0) fails++;
+    nxt_free(rgba);
+    return fails;
+}
+
+/* Validate the cheap id enumerator: list must be non-empty and strictly
+   ascending; if want_id >= 0 it must appear in the list. Returns fail count. */
+static int check_list_ids(nxt_cache *c, const char *type, int want_id)
+{
+    int *ids = NULL;
+    size_t n = 0;
+    nxt_result rc = nxt_list_type_ids(c, type, &ids, &n);
+    if (rc != NXT_OK)
+    {
+        fprintf(stderr, "FAIL list_type_ids %s: rc=%d err=%s\n", type, rc, nxt_last_error());
+        return 1;
+    }
+    int fails = 0, found = 0;
+    for (size_t i = 0; i < n; i++)
+    {
+        if (i > 0 && ids[i] <= ids[i - 1])
+        {
+            fprintf(stderr, "FAIL list %s: not ascending at %zu (%d <= %d)\n",
+                    type, i, ids[i], ids[i - 1]);
+            fails++;
+            break;
+        }
+        if (ids[i] == want_id) found = 1;
+    }
+    if (n == 0) { fprintf(stderr, "FAIL list %s: empty\n", type); fails++; }
+    if (want_id >= 0 && !found)
+    {
+        fprintf(stderr, "FAIL list %s: id %d missing\n", type, want_id);
+        fails++;
+    }
+    printf("  list %-8s %zu ids  [%d..%d]  %s\n", type, n,
+           n ? ids[0] : -1, n ? ids[n - 1] : -1, fails ? "FAIL" : "OK");
+    nxt_free(ids);
+    return fails;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2)
@@ -144,6 +208,12 @@ int main(int argc, char **argv)
     check_model(c, 131);
     check_model(c, 200);
 
+    /* Inventory-icon render (item -> base model -> RGBA). Whip 4151 + coins 995
+       + recoloured blue partyhat 1042 exercise the colour/recolour/light path. */
+    failures += check_item_icon(c, 4151);
+    failures += check_item_icon(c, 995);
+    failures += check_item_icon(c, 1042);
+
     failures += check(c, "item",  4151, "Abyssal whip");
     failures += check(c, "npc",   0,    "Hans");
     failures += check(c, "quest", 1,    "Tower of Life");
@@ -169,6 +239,20 @@ int main(int argc, char **argv)
         printf("  dump_all FAILED rc=%d err=%s\n", rc, nxt_last_error());
         failures++;
     }
+
+    /* Cheap id enumeration: a sharded type (item, (aid<<8)|fid), a single-archive
+       type (inv, index 2/archive 5) and an archive-keyed type (if). */
+    failures += check_list_ids(c, "item", 4151);
+    failures += check_list_ids(c, "inv", 93);
+    failures += check_list_ids(c, "npc", 0);
+    failures += check_list_ids(c, "if", -1);
+
+    /* Unknown type must be rejected, not crash. */
+    int *bogus = NULL;
+    size_t bogus_n = 0;
+    rc = nxt_list_type_ids(c, "nope", &bogus, &bogus_n);
+    printf("  list nope rc=%d (expected %d)\n", rc, NXT_ERR_INVALID);
+    if (rc != NXT_ERR_INVALID) failures++;
 
     nxt_cache_close(c);
     printf("%d failures\n", failures);

@@ -80,6 +80,18 @@ Archive &RSCache::archive(int indexId, int archiveId)
     return index(indexId).archive(archiveId);
 }
 
+std::vector<int> RSCache::fileIds(int indexId, int archiveId)
+{
+    // The reference table (decoded when the Index is opened) already declares
+    // every archive's file ids — read them straight from `archives` so we never
+    // pull or decompress the archive data blob.
+    Index &idx = index(indexId);
+    auto it = idx.archives.find(archiveId);
+    if (it == idx.archives.end()) return {};
+    const Archive &a = it->second;
+    return std::vector<int>(a.fileIds.begin(), a.fileIds.end());
+}
+
 void RSCache::evictArchive(int indexId, int archiveId)
 {
     auto it = indices.find(indexId);

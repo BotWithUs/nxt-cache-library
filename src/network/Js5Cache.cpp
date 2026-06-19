@@ -26,4 +26,16 @@ Archive &Js5Cache::archive(int indexId, int archiveId)
     return index(indexId).archive(archiveId);
 }
 
+std::vector<int> Js5Cache::fileIds(int indexId, int archiveId)
+{
+    // Reference-table file ids are populated at index construction (no group
+    // fetch); read them from `archives` rather than calling archive(), which
+    // would download + decompress the archive group over the wire.
+    Js5Index &idx = index(indexId);
+    auto it = idx.archives.find(archiveId);
+    if (it == idx.archives.end()) return {};
+    const Archive &a = it->second;
+    return std::vector<int>(a.fileIds.begin(), a.fileIds.end());
+}
+
 }  // namespace js5
