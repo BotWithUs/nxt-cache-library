@@ -56,7 +56,7 @@ Index &RSCache::index(int id)
     {
         return it->second;
     }
-    std::string filename = path + "\\js5-" + std::to_string(id) + ".jcache";
+    std::string filename = path + "/js5-" + std::to_string(id) + ".jcache";
     Index::FallbackFn fallback;
     if (fallbackEnabled_) fallback = makeResolver(liveSocket_.get());
     indices.try_emplace(id, id, filename, std::move(fallback));

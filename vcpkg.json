@@ -6,7 +6,11 @@
     "sqlite3",
     "zlib",
     "bzip2",
-    "liblzma"
+    "liblzma",
+    {
+      "name": "curl",
+      "features": ["ssl"]
+    }
   ],
   "description": "C++ library for reading the RuneScape NXT cache (sqlite-backed jcache files)",
   "name": "nxtcachelibrary",

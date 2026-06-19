@@ -31,7 +31,11 @@ option(NXTCACHE_BUILD_DUMPER "" ON)
 # Static deps (sqlite3, zlib, bzip2) get baked into NXTCache.dll so it ships as
 # a single file. Use the -md variant to keep the dynamic CRT — required for
 # loading from the JVM (which links /MD) without CRT heap-ownership conflicts.
-set(VCPKG_TARGET_TRIPLET x64-windows-static-md)
+# Windows only: on Linux, vcpkg defaults to the already-static x64-linux triplet.
+# CMAKE_HOST_WIN32 is set before project(), unlike WIN32.
+if(CMAKE_HOST_WIN32)
+    set(VCPKG_TARGET_TRIPLET x64-windows-static-md)
+endif()
 
 if(NOT DEFINED CMAKE_CXX_STANDARD)
     set(CMAKE_CXX_STANDARD 20)
@@ -86,6 +90,8 @@ find_package(ZLIB REQUIRED)
 find_package(BZip2 REQUIRED)
 
 find_package(LibLZMA REQUIRED)
+
+find_package(CURL REQUIRED)
 
 include(FetchContent)
 
@@ -172,9 +178,14 @@ target_link_libraries(NXTCache PUBLIC
 	BZip2::BZip2
 	LibLZMA::LibLZMA
 	nlohmann_json::nlohmann_json
-	ws2_32
-	winhttp
+	CURL::libcurl
 )
+
+if(WIN32) # windows
+	target_link_libraries(NXTCache PUBLIC
+		ws2_32
+	)
+endif()
 
 set_target_properties(NXTCache PROPERTIES
 	WINDOWS_EXPORT_ALL_SYMBOLS

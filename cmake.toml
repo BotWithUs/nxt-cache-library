@@ -8,7 +8,11 @@ cmake-before = """
 # Static deps (sqlite3, zlib, bzip2) get baked into NXTCache.dll so it ships as
 # a single file. Use the -md variant to keep the dynamic CRT — required for
 # loading from the JVM (which links /MD) without CRT heap-ownership conflicts.
-set(VCPKG_TARGET_TRIPLET x64-windows-static-md)
+# Windows only: on Linux, vcpkg defaults to the already-static x64-linux triplet.
+# CMAKE_HOST_WIN32 is set before project(), unlike WIN32.
+if(CMAKE_HOST_WIN32)
+    set(VCPKG_TARGET_TRIPLET x64-windows-static-md)
+endif()
 
 if(NOT DEFINED CMAKE_CXX_STANDARD)
     set(CMAKE_CXX_STANDARD 20)
@@ -31,13 +35,16 @@ build-dumper = "NXTCACHE_BUILD_DUMPER"
 
 [vcpkg]
 version = "2025.06.13"
-packages = ["sqlite3", "zlib", "bzip2", "liblzma"]
+# curl[ssl] resolves the default SSL backend per triplet: Schannel on Windows
+# (no OpenSSL pulled), OpenSSL on Linux. Backs the HTTPS jav_config fetch.
+packages = ["sqlite3", "zlib", "bzip2", "liblzma", "curl[ssl]"]
 
 [find-package]
 unofficial-sqlite3 = { }
 ZLIB = { }
 BZip2 = { }
 LibLZMA = { }
+CURL = { }
 
 [fetch-content.nlohmann_json]
 git = "https://github.com/nlohmann/json.git"
@@ -71,9 +78,10 @@ link-libraries = [
     "BZip2::BZip2",
     "LibLZMA::LibLZMA",
     "nlohmann_json::nlohmann_json",
-    "ws2_32",
-    "winhttp",
+    "CURL::libcurl",
 ]
+# Winsock is Windows-only; on Linux the BSD socket API lives in libc.
+windows.link-libraries = ["ws2_32"]
 compile-features = ["cxx_std_20"]
 properties.WINDOWS_EXPORT_ALL_SYMBOLS = true
 

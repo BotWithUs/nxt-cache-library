@@ -6,16 +6,53 @@
 #include <stdexcept>
 #include <string>
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#else
+#include <cerrno>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
+
+#ifndef _WIN32
+// Map the handful of Winsock spellings used below onto their POSIX equivalents
+// so the socket code compiles unchanged. The handle type widens to int, the
+// invalid sentinel becomes -1, and error reporting reads errno.
+using SOCKET = int;
+constexpr SOCKET INVALID_SOCKET = -1;
+
+inline int closesocket(SOCKET s)
+{
+    return ::close(s);
+}
+
+inline int WSAGetLastError()
+{
+    return errno;
+}
+
+#define SD_BOTH SHUT_RDWR
+#endif
 
 namespace js5 {
 
 namespace {
 
 constexpr size_t kMaxBlockSize = 102400;
+
+// On Linux a send() to a peer that has closed raises SIGPIPE (default action:
+// terminate). MSG_NOSIGNAL turns that into an EPIPE return instead. Windows has
+// no such signal, so the flag is zero there.
+#ifdef _WIN32
+constexpr int kSendFlags = 0;
+#else
+constexpr int kSendFlags = MSG_NOSIGNAL;
+#endif
 
 void writeU16BE(uint8_t *p, uint16_t v) { p[0] = static_cast<uint8_t>(v >> 8); p[1] = static_cast<uint8_t>(v); }
 void writeU32BE(uint8_t *p, uint32_t v)
@@ -36,14 +73,17 @@ uint32_t readU32BE(const uint8_t *p)
 
 void ensureWsaStartup()
 {
+#ifdef _WIN32
     static std::once_flag once;
-    std::call_once(once, []() {
+    std::call_once(once, []()
+    {
         WSADATA data;
         if (WSAStartup(MAKEWORD(2, 2), &data) != 0)
         {
             throw std::runtime_error("WSAStartup failed");
         }
     });
+#endif
 }
 
 }  // namespace
@@ -158,7 +198,7 @@ void Js5Socket::writeBytes(const uint8_t *src, size_t n)
     while (sent < n)
     {
         int r = send(s, reinterpret_cast<const char *>(src + sent),
-                     static_cast<int>(n - sent), 0);
+                     static_cast<int>(n - sent), kSendFlags);
         if (r <= 0) throw std::runtime_error("JS5 send failed: WSA " + std::to_string(WSAGetLastError()));
         sent += static_cast<size_t>(r);
     }
