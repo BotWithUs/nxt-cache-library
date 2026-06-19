@@ -34,6 +34,21 @@ inline const std::map<std::string, TypeMapping> &typeDefaults()
         {"overlay",  {"overlay",   2,  4,  0}},
         {"worldmap", {"worldmap", 23,  0,  0}},
         {"dbrow",    {"dbrow",     2, 41,  0}},
+        // Models and sprites: one archive per id, single file (file 0). shift=0
+        // makes the generic shard math resolve to archive=id, file=0. The modern
+        // RS3 NXT cache remaps assets to high indices: models live at index 47
+        // (LZMA-wrapped, JS5 type 3), sprites at index 8. (Textures, out of scope
+        // here, are at 52=DDS / 54=raw.) Override --index per-call for other
+        // revisions where the model index differs.
+        {"model",    {"model",    47, -1,  0}},
+        {"sprite",   {"sprite",    8, -1,  0}},
+        // Interfaces: cache index 3, each archive = one interface, each file
+        // in that archive = one component. There is no (id, archive, file)
+        // sharding — callers pass the interface id as the archive id and
+        // sweep all files within. We park `archiveId=-1` and `shift=0` as
+        // sentinels; the C-ABI interface getter ignores TypeMapping fields
+        // and addresses the archive directly.
+        {"if",       {"if",        3, -1,  0}},
     };
     return kDefaults;
 }

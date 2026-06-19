@@ -49,13 +49,8 @@ ParsedConfig parseLines(const std::string &body)
     return out;
 }
 
-}  // namespace
-
-ServerConfig fetchServerConfig()
+ServerConfig parseConfig(const std::string &body)
 {
-    std::string body = httpGet("world3.runescape.com",
-                                "/jav_config.ws?binaryType=2",
-                                /*useTls=*/false);
     ParsedConfig cfg = parseLines(body);
 
     ServerConfig out;
@@ -85,6 +80,24 @@ ServerConfig fetchServerConfig()
         throw std::runtime_error("jav_config: 32-char cache key not found in param");
     }
     return out;
+}
+
+}  // namespace
+
+ServerConfig fetchServerConfig()
+{
+    std::string body = httpGet("world3.runescape.com",
+                                "/jav_config.ws?binaryType=2",
+                                /*useTls=*/false);
+    return parseConfig(body);
+}
+
+ServerConfig fetchServerConfigBeta()
+{
+    std::string body = httpGet("world1.runescape.com",
+                                "/jav_config_beta.ws?binaryType=3",
+                                /*useTls=*/true);
+    return parseConfig(body);
 }
 
 }  // namespace js5

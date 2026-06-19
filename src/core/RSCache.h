@@ -32,10 +32,12 @@ public:
 
     std::vector<int> archiveIds(int indexId) override;
     Archive &archive(int indexId, int archiveId) override;
+    void evictArchive(int indexId, int archiveId) override;
 
     // Opens a connection to the live JS5 servers and installs a fallback
     // resolver on every Index in this cache (existing and future). Subsequent
     // reads transparently fetch from network when the local sqlite has no blob.
     // Throws std::runtime_error if the jav_config fetch or handshake fails.
-    void enableLiveFallback();
+    // Pass beta=true to hit the BETA jav_config + JS5 endpoint instead of live.
+    void enableLiveFallback(bool beta = false);
 };

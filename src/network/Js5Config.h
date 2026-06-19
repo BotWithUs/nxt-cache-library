@@ -17,4 +17,8 @@ struct ServerConfig
 // the cache key + server version. Throws std::runtime_error on any failure.
 ServerConfig fetchServerConfig();
 
+// Beta variant — fetches https://world1.runescape.com/jav_config_beta.ws?binaryType=3.
+// Beta runs a different server_version + cache key so it must use its own jav_config.
+ServerConfig fetchServerConfigBeta();
+
 }  // namespace js5

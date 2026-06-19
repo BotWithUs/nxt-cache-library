@@ -3,6 +3,7 @@
 #include "gzip/decompress.hpp"
 
 #include <bzlib.h>
+#include <lzma.h>
 
 #include <cstring>
 #include <stdexcept>
@@ -92,7 +93,58 @@ std::vector<uint8_t> decompress(const uint8_t *data, size_t size)
     }
     if (type == 3)
     {
-        throw std::runtime_error("js5 decompress: lzma (type 3) not supported in this build");
+        // JS5 LZMA payload: 5-byte LZMA1 properties header (lc/lp/pb + LE dict
+        // size) followed by a raw LZMA1 stream with no length field — the output
+        // size comes from the container's uncompressedSize. RS3 model groups
+        // (cache index 47) use this.
+        constexpr uint32_t kPropsSize = 5;
+        if (compressedSize < kPropsSize)
+        {
+            throw std::runtime_error("js5 decompress: lzma payload too small for props");
+        }
+        const uint8_t *props = data + 9;
+        const uint8_t *stream = props + kPropsSize;
+
+        lzma_filter filters[2];
+        filters[0].id = LZMA_FILTER_LZMA1;
+        filters[0].options = nullptr;
+        filters[1].id = LZMA_VLI_UNKNOWN;
+        filters[1].options = nullptr;
+        if (lzma_properties_decode(&filters[0], nullptr, props, kPropsSize) != LZMA_OK)
+        {
+            throw std::runtime_error("js5 decompress: lzma_properties_decode failed");
+        }
+
+        lzma_stream strm = LZMA_STREAM_INIT;
+        lzma_ret rc = lzma_raw_decoder(&strm, filters);
+        if (rc != LZMA_OK)
+        {
+            std::free(filters[0].options);
+            throw std::runtime_error("js5 decompress: lzma_raw_decoder init failed rc=" +
+                                     std::to_string(rc));
+        }
+
+        std::vector<uint8_t> out(uncompressedSize);
+        strm.next_in   = stream;
+        strm.avail_in  = compressedSize - kPropsSize;
+        strm.next_out  = out.data();
+        strm.avail_out = uncompressedSize;
+        rc = lzma_code(&strm, LZMA_FINISH);
+        lzma_end(&strm);
+        std::free(filters[0].options);
+        // LZMA1 raw streams have no end marker, so LZMA_STREAM_END isn't expected;
+        // success is signalled by consuming the input and filling the output.
+        if (rc != LZMA_OK && rc != LZMA_STREAM_END)
+        {
+            throw std::runtime_error("js5 decompress: lzma_code failed rc=" + std::to_string(rc));
+        }
+        if (strm.avail_out != 0)
+        {
+            throw std::runtime_error("js5 decompress: lzma produced " +
+                                     std::to_string(uncompressedSize - strm.avail_out) +
+                                     " of " + std::to_string(uncompressedSize) + " bytes");
+        }
+        return out;
     }
     throw std::runtime_error("js5 decompress: unknown compression type");
 }

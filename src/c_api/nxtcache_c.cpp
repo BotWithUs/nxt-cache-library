@@ -2,6 +2,9 @@
 
 #include "c_api/nxtcache_c.h"
 
+#include "config_types/InterfaceTypes.h"
+#include "config_types/ModelType.h"
+#include "config_types/SpriteType.h"
 #include "config_types/Types.h"
 #include "core/Archive.h"
 #include "core/CacheSource.h"
@@ -11,6 +14,10 @@
 #include "dumper/Json.h"
 #include "maps/MapSquare.h"
 #include "network/Js5Cache.h"
+#include "network/Js5Compression.h"
+#include "network/Js5Config.h"
+#include "network/Js5Index.h"
+#include "network/Js5Socket.h"
 
 #include <nlohmann/json.hpp>
 
@@ -68,6 +75,16 @@ std::optional<T> decodeOne(CacheSource &cs, const nxt::TypeMapping &m, int id)
     type.id = id;
     type.decode(buffer);
     return type;
+}
+
+// Decode a single entry by its registered type name (resolves the TypeMapping).
+template <typename T>
+std::optional<T> decodeByName(CacheSource &cs, const char *name, int id)
+{
+    const auto &defs = nxt::typeDefaults();
+    auto it = defs.find(name);
+    if (it == defs.end()) return std::nullopt;
+    return decodeOne<T>(cs, it->second, id);
 }
 
 template <typename T>
@@ -217,6 +234,76 @@ void nxt_free(void *ptr)
     std::free(ptr);
 }
 
+nxt_result nxt_fetch_master_crcs(uint32_t **out_crcs, size_t *out_count)
+{
+    if (!out_crcs || !out_count)
+    {
+        setError("nxt_fetch_master_crcs: null output");
+        return NXT_ERR_INVALID;
+    }
+    *out_crcs  = nullptr;
+    *out_count = 0;
+    try
+    {
+        // The master index (file 255,255) doesn't share the format of a
+        // regular reference table — so we don't use Js5Index here. Instead
+        // we fetch (255,255) raw, decompress, and walk the master format:
+        // <count u32 BE>? then per-entry <crc u32 BE><version u32 BE> ...
+        // The format varies — fall back to "the bytes ARE a u32 CRC array
+        // alternating with versions" if there's no count header.
+        js5::ServerConfig config = js5::fetchServerConfig();
+        js5::Js5Socket socket(config);
+        auto raw = socket.getFile(255, 255);
+        auto bytes = js5::decompress(raw.data(), raw.size());
+
+        // NXT master index format (from OpenNXT's ChecksumTable.decode):
+        //   byte count
+        //   for each i in 0..count-1:
+        //     u32 BE crc
+        //     u32 BE version
+        //     u32 BE files
+        //     u32 BE size
+        //     byte[64] whirlpool
+        // → 1 + count * 80 bytes (any trailing bytes are RSA-signed hash + slop)
+        if (bytes.empty())
+        {
+            setError("nxt_fetch_master_crcs: empty master index");
+            return NXT_ERR_DECODE;
+        }
+        constexpr std::size_t entrySize = 4 + 4 + 4 + 4 + 64;
+        const std::size_t count = static_cast<std::size_t>(bytes[0]);
+        if (1 + count * entrySize > bytes.size())
+        {
+            setError("nxt_fetch_master_crcs: master count=" +
+                     std::to_string(count) + " but only " +
+                     std::to_string(bytes.size()) + " bytes available");
+            return NXT_ERR_DECODE;
+        }
+        auto *buf = static_cast<uint32_t *>(std::malloc(count * sizeof(uint32_t)));
+        if (!buf)
+        {
+            setError("nxt_fetch_master_crcs: out of memory");
+            return NXT_ERR_INTERNAL;
+        }
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            const std::uint8_t *p = bytes.data() + 1 + i * entrySize;
+            buf[i] = (std::uint32_t(p[0]) << 24) |
+                     (std::uint32_t(p[1]) << 16) |
+                     (std::uint32_t(p[2]) <<  8) |
+                      std::uint32_t(p[3]);
+        }
+        *out_crcs  = buf;
+        *out_count = count;
+        return NXT_OK;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("nxt_fetch_master_crcs: ") + e.what());
+        return NXT_ERR_IO;
+    }
+}
+
 nxt_cache *nxt_cache_open_local(const char *cache_path)
 {
     if (!cache_path)
@@ -244,7 +331,7 @@ nxt_cache *nxt_cache_open_live(void)
     try
     {
         auto wrap = std::make_unique<Cache>();
-        wrap->source = std::make_unique<js5::Js5Cache>();
+        wrap->source = std::make_unique<js5::Js5Cache>(/*beta=*/false);
         return reinterpret_cast<nxt_cache *>(wrap.release());
     }
     catch (const std::exception &e)
@@ -254,7 +341,24 @@ nxt_cache *nxt_cache_open_live(void)
     }
 }
 
-nxt_result nxt_cache_enable_live_fallback(nxt_cache *handle)
+nxt_cache *nxt_cache_open_live_beta(void)
+{
+    try
+    {
+        auto wrap = std::make_unique<Cache>();
+        wrap->source = std::make_unique<js5::Js5Cache>(/*beta=*/true);
+        return reinterpret_cast<nxt_cache *>(wrap.release());
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("open_live_beta failed: ") + e.what());
+        return nullptr;
+    }
+}
+
+namespace {
+
+nxt_result enableLiveFallbackImpl(nxt_cache *handle, bool beta)
 {
     if (!handle)
     {
@@ -269,7 +373,7 @@ nxt_result nxt_cache_enable_live_fallback(nxt_cache *handle)
     }
     try
     {
-        c->local->enableLiveFallback();
+        c->local->enableLiveFallback(beta);
         return NXT_OK;
     }
     catch (const std::exception &e)
@@ -277,6 +381,18 @@ nxt_result nxt_cache_enable_live_fallback(nxt_cache *handle)
         setError(std::string("enable_live_fallback failed: ") + e.what());
         return NXT_ERR_IO;
     }
+}
+
+}  // namespace
+
+nxt_result nxt_cache_enable_live_fallback(nxt_cache *handle)
+{
+    return enableLiveFallbackImpl(handle, /*beta=*/false);
+}
+
+nxt_result nxt_cache_enable_live_fallback_beta(nxt_cache *handle)
+{
+    return enableLiveFallbackImpl(handle, /*beta=*/true);
 }
 
 void nxt_cache_close(nxt_cache *handle)
@@ -479,12 +595,431 @@ NXT_GETTER(quest,    QuestType)
 NXT_GETTER(underlay, UnderlayType)
 NXT_GETTER(overlay,  OverlayType)
 NXT_GETTER(worldmap, WorldMapElementType)
+NXT_GETTER(sprite,   SpriteType)
+NXT_GETTER(model,    ModelType)
 
 #undef NXT_GETTER
 
 nxt_result nxt_get_dbrow_json(nxt_cache *h, int id, char **out, size_t *len)
 {
     return getDbRowJson(h, id, out, len);
+}
+
+// Interfaces are addressed differently from every other config type: one
+// archive in JS5 index 3 is one interface, and each file in that archive is
+// a component. We sweep the archive ourselves rather than going through
+// decodeOne<T>() (which assumes one file = one config entry).
+nxt_result nxt_get_if_json(nxt_cache *handle, int id, char **out_json, size_t *out_len)
+{
+    if (!handle || !out_json || !out_len)
+    {
+        setError("invalid argument: null handle or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    auto *c = reinterpret_cast<Cache *>(handle);
+    try
+    {
+        auto &archive = c->source->archive(3, id);
+        if (archive.id == -1)
+        {
+            setError("interface " + std::to_string(id) + " not found");
+            return NXT_ERR_NOT_FOUND;
+        }
+        InterfaceDef def;
+        def.id = id;
+        for (auto &[fid, fh] : archive.files)
+        {
+            auto buffer = archive.readFile(fid);
+            if (buffer.buffer == nullptr || buffer.remaining() == 0) continue;
+            InterfaceComponentDef comp;
+            comp.id = fid;
+            comp.decode(buffer);
+            def.components.emplace(fid, std::move(comp));
+        }
+        if (def.components.empty())
+        {
+            setError("interface " + std::to_string(id) + " has no components");
+            return NXT_ERR_NOT_FOUND;
+        }
+        json doc = nxtdump::toJson(def);
+        std::string s = doc.dump();
+        char *buf = dupString(s);
+        if (!buf)
+        {
+            setError("malloc failed");
+            return NXT_ERR_INTERNAL;
+        }
+        *out_json = buf;
+        *out_len = s.size();
+        return NXT_OK;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("decode failed: ") + e.what());
+        return NXT_ERR_DECODE;
+    }
+}
+
+/* ---- Sprite raw getters ------------------------------------------------- */
+
+nxt_result nxt_get_sprite_info(nxt_cache *handle, int id,
+                               int32_t *out_frame_count, int32_t *out_canvas_w,
+                               int32_t *out_canvas_h, int32_t *out_palette_count)
+{
+    if (!handle)
+    {
+        setError("invalid argument: null handle");
+        return NXT_ERR_INVALID;
+    }
+    if (out_frame_count)   *out_frame_count = 0;
+    if (out_canvas_w)      *out_canvas_w = 0;
+    if (out_canvas_h)      *out_canvas_h = 0;
+    if (out_palette_count) *out_palette_count = 0;
+    auto *c = reinterpret_cast<Cache *>(handle);
+    try
+    {
+        auto sprite = decodeByName<SpriteType>(*c->source, "sprite", id);
+        if (!sprite)
+        {
+            setError("sprite " + std::to_string(id) + " not found");
+            return NXT_ERR_NOT_FOUND;
+        }
+        if (out_frame_count)   *out_frame_count = static_cast<int32_t>(sprite->frames.size());
+        if (out_canvas_w)      *out_canvas_w = sprite->canvasWidth;
+        if (out_canvas_h)      *out_canvas_h = sprite->canvasHeight;
+        if (out_palette_count) *out_palette_count = sprite->paletteCount;
+        return NXT_OK;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("get_sprite_info failed: ") + e.what());
+        return NXT_ERR_DECODE;
+    }
+}
+
+nxt_result nxt_get_sprite_frame_rgba(nxt_cache *handle, int id, int frame_index,
+                                     uint8_t **out_rgba, size_t *out_count,
+                                     int32_t *out_width, int32_t *out_height,
+                                     int32_t *out_offset_x, int32_t *out_offset_y)
+{
+    if (!handle || !out_rgba || !out_count)
+    {
+        setError("invalid argument: null handle or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    *out_rgba = nullptr;
+    *out_count = 0;
+    if (out_width)    *out_width = 0;
+    if (out_height)   *out_height = 0;
+    if (out_offset_x) *out_offset_x = 0;
+    if (out_offset_y) *out_offset_y = 0;
+    auto *c = reinterpret_cast<Cache *>(handle);
+    try
+    {
+        auto sprite = decodeByName<SpriteType>(*c->source, "sprite", id);
+        if (!sprite)
+        {
+            setError("sprite " + std::to_string(id) + " not found");
+            return NXT_ERR_NOT_FOUND;
+        }
+        if (frame_index < 0 || frame_index >= static_cast<int>(sprite->frames.size()))
+        {
+            setError("sprite frame index out of range");
+            return NXT_ERR_INVALID;
+        }
+        const SpriteFrame &f = sprite->frames[static_cast<size_t>(frame_index)];
+        const size_t n = f.rgba.size();
+        // malloc(0) may return NULL; hand back a freeable pointer regardless.
+        auto *buf = static_cast<uint8_t *>(std::malloc(n != 0 ? n : 1));
+        if (!buf)
+        {
+            setError("malloc failed");
+            return NXT_ERR_INTERNAL;
+        }
+        if (n != 0) std::memcpy(buf, f.rgba.data(), n);
+        *out_rgba = buf;
+        *out_count = n;
+        if (out_width)    *out_width = f.width;
+        if (out_height)   *out_height = f.height;
+        if (out_offset_x) *out_offset_x = f.offsetX;
+        if (out_offset_y) *out_offset_y = f.offsetY;
+        return NXT_OK;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("get_sprite_frame_rgba failed: ") + e.what());
+        return NXT_ERR_DECODE;
+    }
+}
+
+/* ---- Model raw getters -------------------------------------------------- */
+
+nxt_result nxt_get_model_info(nxt_cache *handle, int id, nxt_model_info *out_info)
+{
+    if (!handle || !out_info)
+    {
+        setError("invalid argument: null handle or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    std::memset(out_info, 0, sizeof(*out_info));
+    auto *c = reinterpret_cast<Cache *>(handle);
+    try
+    {
+        auto model = decodeByName<ModelType>(*c->source, "model", id);
+        if (!model)
+        {
+            setError("model " + std::to_string(id) + " not found");
+            return NXT_ERR_NOT_FOUND;
+        }
+        out_info->format       = model->format;
+        out_info->version      = model->version;
+        out_info->mesh_count   = static_cast<int32_t>(model->renders.size());
+        out_info->vertex_count = model->vertexCount;
+        out_info->face_count   = model->totalFaces;
+        out_info->min_x = model->minX; out_info->max_x = model->maxX;
+        out_info->min_y = model->minY; out_info->max_y = model->maxY;
+        out_info->min_z = model->minZ; out_info->max_z = model->maxZ;
+        out_info->has_skins  = model->hasSkin ? 1 : 0;
+        out_info->has_colors = model->vertexColors.empty() ? 0 : 1;
+        return NXT_OK;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("get_model_info failed: ") + e.what());
+        return NXT_ERR_DECODE;
+    }
+}
+
+nxt_result nxt_get_model_vertices(nxt_cache *handle, int id,
+                                  int32_t **out_xyz, size_t *out_count)
+{
+    if (!handle || !out_xyz || !out_count)
+    {
+        setError("invalid argument: null handle or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    *out_xyz = nullptr;
+    *out_count = 0;
+    auto *c = reinterpret_cast<Cache *>(handle);
+    try
+    {
+        auto model = decodeByName<ModelType>(*c->source, "model", id);
+        if (!model)
+        {
+            setError("model " + std::to_string(id) + " not found");
+            return NXT_ERR_NOT_FOUND;
+        }
+        const size_t n = static_cast<size_t>(model->vertexCount) * 3;
+        auto *buf = static_cast<int32_t *>(std::malloc((n != 0 ? n : 1) * sizeof(int32_t)));
+        if (!buf)
+        {
+            setError("malloc failed");
+            return NXT_ERR_INTERNAL;
+        }
+        for (int i = 0; i < model->vertexCount; ++i)
+        {
+            buf[i * 3 + 0] = model->vx[static_cast<size_t>(i)];
+            buf[i * 3 + 1] = model->vy[static_cast<size_t>(i)];
+            buf[i * 3 + 2] = model->vz[static_cast<size_t>(i)];
+        }
+        *out_xyz = buf;
+        *out_count = n;
+        return NXT_OK;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("get_model_vertices failed: ") + e.what());
+        return NXT_ERR_DECODE;
+    }
+}
+
+nxt_result nxt_get_model_normals(nxt_cache *handle, int id,
+                                 int8_t **out_xyz, size_t *out_count)
+{
+    if (!handle || !out_xyz || !out_count)
+    {
+        setError("invalid argument: null handle or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    *out_xyz = nullptr;
+    *out_count = 0;
+    auto *c = reinterpret_cast<Cache *>(handle);
+    try
+    {
+        auto model = decodeByName<ModelType>(*c->source, "model", id);
+        if (!model)
+        {
+            setError("model " + std::to_string(id) + " not found");
+            return NXT_ERR_NOT_FOUND;
+        }
+        const size_t n = static_cast<size_t>(model->vertexCount) * 3;
+        auto *buf = static_cast<int8_t *>(std::malloc(n != 0 ? n : 1));
+        if (!buf)
+        {
+            setError("malloc failed");
+            return NXT_ERR_INTERNAL;
+        }
+        const bool haveNormals = !model->nx.empty();
+        for (int i = 0; i < model->vertexCount; ++i)
+        {
+            buf[i * 3 + 0] = haveNormals ? static_cast<int8_t>(model->nx[static_cast<size_t>(i)]) : 0;
+            buf[i * 3 + 1] = haveNormals ? static_cast<int8_t>(model->ny[static_cast<size_t>(i)]) : 0;
+            buf[i * 3 + 2] = haveNormals ? static_cast<int8_t>(model->nz[static_cast<size_t>(i)]) : 0;
+        }
+        *out_xyz = buf;
+        *out_count = n;
+        return NXT_OK;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("get_model_normals failed: ") + e.what());
+        return NXT_ERR_DECODE;
+    }
+}
+
+nxt_result nxt_get_model_uvs(nxt_cache *handle, int id,
+                             float **out_uv, size_t *out_count)
+{
+    if (!handle || !out_uv || !out_count)
+    {
+        setError("invalid argument: null handle or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    *out_uv = nullptr;
+    *out_count = 0;
+    auto *c = reinterpret_cast<Cache *>(handle);
+    try
+    {
+        auto model = decodeByName<ModelType>(*c->source, "model", id);
+        if (!model)
+        {
+            setError("model " + std::to_string(id) + " not found");
+            return NXT_ERR_NOT_FOUND;
+        }
+        const size_t n = static_cast<size_t>(model->vertexCount) * 2;
+        auto *buf = static_cast<float *>(std::malloc((n != 0 ? n : 1) * sizeof(float)));
+        if (!buf)
+        {
+            setError("malloc failed");
+            return NXT_ERR_INTERNAL;
+        }
+        const bool haveUv = !model->u.empty();
+        for (int i = 0; i < model->vertexCount; ++i)
+        {
+            buf[i * 2 + 0] = haveUv ? model->u[static_cast<size_t>(i)] : 0.0f;
+            buf[i * 2 + 1] = haveUv ? model->v[static_cast<size_t>(i)] : 0.0f;
+        }
+        *out_uv = buf;
+        *out_count = n;
+        return NXT_OK;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("get_model_uvs failed: ") + e.what());
+        return NXT_ERR_DECODE;
+    }
+}
+
+nxt_result nxt_get_model_colors(nxt_cache *handle, int id,
+                                uint32_t **out_colors, size_t *out_count)
+{
+    if (!handle || !out_colors || !out_count)
+    {
+        setError("invalid argument: null handle or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    *out_colors = nullptr;
+    *out_count = 0;
+    auto *c = reinterpret_cast<Cache *>(handle);
+    try
+    {
+        auto model = decodeByName<ModelType>(*c->source, "model", id);
+        if (!model)
+        {
+            setError("model " + std::to_string(id) + " not found");
+            return NXT_ERR_NOT_FOUND;
+        }
+        if (model->vertexColors.empty())
+        {
+            return NXT_OK;   // no per-vertex colours
+        }
+        const size_t n = model->vertexColors.size();
+        auto *buf = static_cast<uint32_t *>(std::malloc(n * sizeof(uint32_t)));
+        if (!buf)
+        {
+            setError("malloc failed");
+            return NXT_ERR_INTERNAL;
+        }
+        for (size_t i = 0; i < n; ++i)
+        {
+            uint32_t col = static_cast<uint32_t>(model->vertexColors[i] & 0xFFFF);
+            uint32_t a = (i < model->vertexAlphas.size())
+                             ? static_cast<uint32_t>(model->vertexAlphas[i] & 0xFF) : 0xFF;
+            buf[i] = (col << 8) | a;
+        }
+        *out_colors = buf;
+        *out_count = n;
+        return NXT_OK;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("get_model_colors failed: ") + e.what());
+        return NXT_ERR_DECODE;
+    }
+}
+
+nxt_result nxt_get_model_faces(nxt_cache *handle, int id,
+                               nxt_model_face **out_faces, size_t *out_count)
+{
+    if (!handle || !out_faces || !out_count)
+    {
+        setError("invalid argument: null handle or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    *out_faces = nullptr;
+    *out_count = 0;
+    auto *c = reinterpret_cast<Cache *>(handle);
+    try
+    {
+        auto model = decodeByName<ModelType>(*c->source, "model", id);
+        if (!model)
+        {
+            setError("model " + std::to_string(id) + " not found");
+            return NXT_ERR_NOT_FOUND;
+        }
+        std::vector<nxt_model_face> faces;
+        faces.reserve(static_cast<size_t>(model->totalFaces));
+        for (const auto &render : model->renders)
+        {
+            const size_t tris = render.indices.size() / 3;
+            for (size_t t = 0; t < tris; ++t)
+            {
+                nxt_model_face f;
+                f.a = render.indices[t * 3 + 0];
+                f.b = render.indices[t * 3 + 1];
+                f.c = render.indices[t * 3 + 2];
+                f.material = render.materialArgument;
+                faces.push_back(f);
+            }
+        }
+        const size_t n = faces.size();
+        auto *buf = static_cast<nxt_model_face *>(
+            std::malloc((n != 0 ? n : 1) * sizeof(nxt_model_face)));
+        if (!buf)
+        {
+            setError("malloc failed");
+            return NXT_ERR_INTERNAL;
+        }
+        if (n != 0) std::memcpy(buf, faces.data(), n * sizeof(nxt_model_face));
+        *out_faces = buf;
+        *out_count = n;
+        return NXT_OK;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("get_model_faces failed: ") + e.what());
+        return NXT_ERR_DECODE;
+    }
 }
 
 nxt_result nxt_get_json(nxt_cache *handle, const char *type_name, int id,
@@ -510,6 +1045,9 @@ nxt_result nxt_get_json(nxt_cache *handle, const char *type_name, int id,
     if (t == "overlay")  return nxt_get_overlay_json(handle, id, out_json, out_len);
     if (t == "worldmap") return nxt_get_worldmap_json(handle, id, out_json, out_len);
     if (t == "dbrow")    return nxt_get_dbrow_json(handle, id, out_json, out_len);
+    if (t == "if")       return nxt_get_if_json(handle, id, out_json, out_len);
+    if (t == "sprite")   return nxt_get_sprite_json(handle, id, out_json, out_len);
+    if (t == "model")    return nxt_get_model_json(handle, id, out_json, out_len);
     setError("unknown type: " + t);
     return NXT_ERR_INVALID;
 }
@@ -548,6 +1086,33 @@ nxt_result nxt_dump_all_json(nxt_cache *handle, const char *type_name, int limit
         else if (t == "underlay") arr = dumpAll<UnderlayType>(*c->source, it->second, limit_or_neg1);
         else if (t == "overlay")  arr = dumpAll<OverlayType>(*c->source, it->second, limit_or_neg1);
         else if (t == "worldmap") arr = dumpAll<WorldMapElementType>(*c->source, it->second, limit_or_neg1);
+        else if (t == "sprite")   arr = dumpAll<SpriteType>(*c->source, it->second, limit_or_neg1);
+        else if (t == "model")    arr = dumpAll<ModelType>(*c->source, it->second, limit_or_neg1);
+        else if (t == "if")
+        {
+            // Interfaces are archive-keyed, not file-keyed; sweep each archive
+            // in index 3, build an InterfaceDef per archive.
+            arr = json::array();
+            std::vector<int> aids = c->source->archiveIds(it->second.indexId);
+            for (int aid : aids)
+            {
+                if (limit_or_neg1 >= 0 && static_cast<int>(arr.size()) >= limit_or_neg1) break;
+                auto &archive = c->source->archive(it->second.indexId, aid);
+                if (archive.id == -1) continue;
+                InterfaceDef def;
+                def.id = aid;
+                for (auto &[fid, fh] : archive.files)
+                {
+                    auto buffer = archive.readFile(fid);
+                    if (buffer.buffer == nullptr || buffer.remaining() == 0) continue;
+                    InterfaceComponentDef comp;
+                    comp.id = fid;
+                    comp.decode(buffer);
+                    def.components.emplace(fid, std::move(comp));
+                }
+                if (!def.components.empty()) arr.push_back(nxtdump::toJson(def));
+            }
+        }
         else if (t == "dbrow")
         {
             // dbrow uses DbRowProvider for its tableId/col0Key index; surface raw rows.

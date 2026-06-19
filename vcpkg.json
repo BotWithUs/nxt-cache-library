@@ -5,7 +5,8 @@
   "dependencies": [
     "sqlite3",
     "zlib",
-    "bzip2"
+    "bzip2",
+    "liblzma"
   ],
   "description": "C++ library for reading the RuneScape NXT cache (sqlite-backed jcache files)",
   "name": "nxtcachelibrary",

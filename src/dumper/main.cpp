@@ -1,3 +1,6 @@
+#include "config_types/InterfaceTypes.h"
+#include "config_types/ModelType.h"
+#include "config_types/SpriteType.h"
 #include "config_types/Types.h"
 #include "core/Archive.h"
 #include "core/CacheSource.h"
@@ -14,6 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -39,7 +43,9 @@ void usage(const char *prog)
         << "Required:\n"
         << "  --type <name>       npc | item | loc | seq | varbit | enum | struct |\n"
         << "                      inv | param | quest | underlay | overlay |\n"
-        << "                      worldmap | dbrow\n"
+        << "                      worldmap | dbrow | if | sprite | model\n"
+        << "                      (sprite/model emit metadata only; pixel/geometry\n"
+        << "                       bulk data is exposed via the C ABI)\n"
         << "\n"
         << "Source (pick one; default: local):\n"
         << "  --cache <path>      Read from local sqlite jcache (js5-*.jcache files)\n"
@@ -55,6 +61,12 @@ void usage(const char *prog)
         << "  --archive <n>       Override default archive id (-1 = sharded)\n"
         << "  --shift <n>         Override default shift (sharded layout)\n"
         << "  --out <file>        Write output to file instead of stdout\n"
+        << "  --out-dir <path>    For --type if only: write one\n"
+        << "                      interface-<id>.json per archive into <path>.\n"
+        << "                      Each interface is decoded, written, and evicted\n"
+        << "                      from memory before the next is read — required\n"
+        << "                      for bulk dumps (the in-memory array swallows tens\n"
+        << "                      of GB on a full sweep).\n"
         << "  --pretty            Pretty-print JSON (indent=2)\n"
         << "  --help              Show this message\n";
 }
@@ -185,6 +197,7 @@ int main(int argc, char **argv)
     std::string cachePath;
     std::string typeName;
     std::string outPath;
+    std::string outDir;
     std::string sourceMode = "local";
     std::string fallbackMode;
     std::optional<int> id;
@@ -232,6 +245,7 @@ int main(int argc, char **argv)
         else if (a == "--archive")  archiveOverride = takeIntArg(i, "--archive");
         else if (a == "--shift")    shiftOverride   = takeIntArg(i, "--shift");
         else if (a == "--out")      outPath         = takeArg(i, "--out");
+        else if (a == "--out-dir")  outDir          = takeArg(i, "--out-dir");
         else if (a == "--pretty")   pretty          = true;
         else
         {
@@ -311,6 +325,83 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    // Streaming path: --type if --out-dir <path>. Write one
+    // interface-<id>.json per archive and evict the archive between files so
+    // peak RSS stays bounded by the largest single interface.
+    if (typeName == "if" && !outDir.empty())
+    {
+        if (id || limit || indexOverride || archiveOverride || shiftOverride)
+        {
+            std::cerr << "--out-dir is the bulk-sweep mode; combine with no other selectors\n";
+            return 2;
+        }
+        try
+        {
+            std::filesystem::create_directories(outDir);
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "Cannot create --out-dir '" << outDir << "': " << e.what() << "\n";
+            return 1;
+        }
+
+        try
+        {
+            std::vector<int> aids = cache->archiveIds(m.indexId);
+            int written = 0, skipped = 0;
+            for (int aid : aids)
+            {
+                auto &archive = cache->archive(m.indexId, aid);
+                if (archive.id == -1) { skipped++; continue; }
+
+                InterfaceDef def;
+                def.id = aid;
+                for (auto &[fid, fh] : archive.files)
+                {
+                    auto buffer = archive.readFile(fid);
+                    if (buffer.buffer == nullptr || buffer.remaining() == 0) continue;
+                    InterfaceComponentDef comp;
+                    comp.id = fid;
+                    comp.decode(buffer);
+                    def.components.emplace(fid, std::move(comp));
+                }
+                if (def.components.empty())
+                {
+                    cache->evictArchive(m.indexId, aid);
+                    skipped++;
+                    continue;
+                }
+
+                json doc = nxtdump::toJson(def);
+                std::string s = pretty ? doc.dump(2) : doc.dump();
+                std::filesystem::path file =
+                    std::filesystem::path(outDir) / ("interface-" + std::to_string(aid) + ".json");
+                std::ofstream f(file, std::ios::binary);
+                if (!f)
+                {
+                    std::cerr << "Failed to open " << file << "\n";
+                    return 1;
+                }
+                f << s;
+                f.close();
+
+                cache->evictArchive(m.indexId, aid);
+                written++;
+                if (written % 50 == 0)
+                {
+                    std::cerr << "  written " << written << "/" << aids.size() << "\n";
+                }
+            }
+            std::cerr << "Done: " << written << " written, " << skipped << " empty/missing.\n";
+            return 0;
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "Stream-dump failed: " << e.what() << "\n";
+            return 1;
+        }
+    }
+
     json out;
 
     try
@@ -328,7 +419,48 @@ int main(int argc, char **argv)
         else if (typeName == "underlay") out = dumpRange<UnderlayType>(*cache, m, id, limit);
         else if (typeName == "overlay")  out = dumpRange<OverlayType>(*cache, m, id, limit);
         else if (typeName == "worldmap") out = dumpRange<WorldMapElementType>(*cache, m, id, limit);
+        else if (typeName == "sprite")   out = dumpRange<SpriteType>(*cache, m, id, limit);
+        else if (typeName == "model")    out = dumpRange<ModelType>(*cache, m, id, limit);
         else if (typeName == "dbrow")    out = dumpDbRows(*cache, m, id, limit);
+        else if (typeName == "if")
+        {
+            // Per-archive sweep: one archive = one interface = N components.
+            out = json::array();
+            int count = 0;
+            auto wantMore = [&]() { return !limit || count < *limit; };
+            auto dumpOne = [&](int aid) -> bool {
+                auto &archive = cache->archive(m.indexId, aid);
+                if (archive.id == -1) return false;
+                InterfaceDef def;
+                def.id = aid;
+                for (auto &[fid, fh] : archive.files)
+                {
+                    auto buffer = archive.readFile(fid);
+                    if (buffer.buffer == nullptr || buffer.remaining() == 0) continue;
+                    InterfaceComponentDef comp;
+                    comp.id = fid;
+                    comp.decode(buffer);
+                    def.components.emplace(fid, std::move(comp));
+                }
+                if (def.components.empty()) return false;
+                out.push_back(nxtdump::toJson(def));
+                count++;
+                return true;
+            };
+            if (id)
+            {
+                dumpOne(*id);
+            }
+            else
+            {
+                std::vector<int> aids = cache->archiveIds(m.indexId);
+                for (int aid : aids)
+                {
+                    if (!wantMore()) break;
+                    dumpOne(aid);
+                }
+            }
+        }
     }
     catch (const std::exception &e)
     {

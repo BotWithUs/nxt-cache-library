@@ -56,10 +56,18 @@ NXT_API nxt_cache *nxt_cache_open_local(const char *cache_path);
    Performs jav_config.ws fetch + handshake before returning. */
 NXT_API nxt_cache *nxt_cache_open_live(void);
 
+/* Open a cache backed by the BETA Jagex JS5 endpoint
+   (https://world1.runescape.com/jav_config_beta.ws?binaryType=3). */
+NXT_API nxt_cache *nxt_cache_open_live_beta(void);
+
 /* Enable transparent live-JS5 fallback on a local cache. After this call,
    any read against the local sqlite that finds no blob will be fetched
    from the network. No-op for caches opened with nxt_cache_open_live. */
 NXT_API nxt_result nxt_cache_enable_live_fallback(nxt_cache *cache);
+
+/* Same as nxt_cache_enable_live_fallback, but uses the BETA jav_config + JS5
+   endpoint. Must be called BEFORE any read that needs the fallback. */
+NXT_API nxt_result nxt_cache_enable_live_fallback_beta(nxt_cache *cache);
 
 /* Release a cache handle. Safe to pass NULL. */
 NXT_API void nxt_cache_close(nxt_cache *cache);
@@ -72,6 +80,15 @@ NXT_API const char *nxt_last_error(void);
 
 /* Free a buffer returned by any getter (uint8_t* or char*). Safe to pass NULL. */
 NXT_API void nxt_free(void *ptr);
+
+/* ---- Master reference table CRCs --------------------------------------- */
+
+/* Connect to the live JS5 server, fetch the master reference table
+   (file 255,255), and return the per-major CRC list in major-id order.
+   *out_crcs is a freshly allocated array of *out_count uint32 values
+   (caller frees with nxt_free). The CRCs are intended for the rs2client
+   login packet (state 80's LM+24+106232..+106240 array). */
+NXT_API nxt_result nxt_fetch_master_crcs(uint32_t **out_crcs, size_t *out_count);
 
 /* ---- Raw archive access ------------------------------------------------- */
 
@@ -170,10 +187,104 @@ NXT_API nxt_result nxt_get_overlay_json (nxt_cache *, int id, char **out_json, s
 NXT_API nxt_result nxt_get_worldmap_json(nxt_cache *, int id, char **out_json, size_t *out_len);
 NXT_API nxt_result nxt_get_dbrow_json   (nxt_cache *, int id, char **out_json, size_t *out_len);
 
+/* ---- Interface getter ---------------------------------------------------
+ *
+ * Decode one whole interface (cache index 3 archive = interface id, files =
+ * components). Returns a JSON object: { "id": N, "components": { fileId: {..} } }.
+ * Each component object carries: componentType, debugName, raw position/size,
+ * options, event mask + scripts, and a type-specific block (sprite/button/
+ * model/list/etc.) decoded by jag::Component::DecodeType + the 22 per-type
+ * tails in rs2client.exe. NUL-terminated UTF-8; free *out_json with nxt_free.
+ */
+NXT_API nxt_result nxt_get_if_json      (nxt_cache *, int id, char **out_json, size_t *out_len);
+
+/* ---- Sprites (JS5 index 8) ----------------------------------------------
+ *
+ * A sprite "group" (one archive id) holds one or more frames. The *_json getter
+ * returns metadata only: { id, canvasWidth, canvasHeight, paletteCount,
+ * frameCount, frames:[{offsetX,offsetY,width,height}] }. Actual pixels are
+ * fetched per frame as RGBA8888 via nxt_get_sprite_frame_rgba.
+ */
+NXT_API nxt_result nxt_get_sprite_json(nxt_cache *, int id, char **out_json, size_t *out_len);
+
+/* Quick header info for a sprite group. Any out-param may be NULL. Returns
+   NXT_ERR_NOT_FOUND if the group id is absent. */
+NXT_API nxt_result nxt_get_sprite_info(nxt_cache *cache, int id,
+                                       int32_t *out_frame_count, int32_t *out_canvas_w,
+                                       int32_t *out_canvas_h, int32_t *out_palette_count);
+
+/* Decode one frame of a sprite group into a freshly allocated RGBA8888 buffer
+   (R,G,B,A bytes, row-major, top-left origin). *out_count is the byte length
+   (width*height*4); free *out_rgba with nxt_free. The geometry out-params may be
+   NULL. Returns NXT_ERR_NOT_FOUND if the group is absent, NXT_ERR_INVALID if
+   frame_index is out of range. */
+NXT_API nxt_result nxt_get_sprite_frame_rgba(nxt_cache *cache, int id, int frame_index,
+                                             uint8_t **out_rgba, size_t *out_count,
+                                             int32_t *out_width, int32_t *out_height,
+                                             int32_t *out_offset_x, int32_t *out_offset_y);
+
+/* ---- Models (JS5 index 47) ----------------------------------------------
+ *
+ * RS3 "NXT" GPU-mesh models (version 5 "meshdata" layout). The *_json getter
+ * returns metadata only ({ id, format, version, meshCount, vertexCount,
+ * faceCount, hasSkins, hasColors, materialArgs, bbox }). The geometry getters
+ * expose one shared vertex pool (positions/normals/UVs/colours) plus a flat
+ * triangle list; face indices reference the shared pool directly. All arrays
+ * are freshly allocated; free with nxt_free.
+ *
+ * NOTE: index-47 model groups are LZMA-compressed in the cache. If this build's
+ * decompression layer lacks LZMA support these getters return NXT_ERR_DECODE.
+ */
+
+typedef struct nxt_model_info
+{
+    int32_t format;
+    int32_t version;
+    int32_t mesh_count;          /* render submeshes */
+    int32_t vertex_count;        /* shared vertex pool size */
+    int32_t face_count;          /* total triangles across submeshes */
+    int32_t min_x, max_x, min_y, max_y, min_z, max_z;
+    uint8_t has_skins;
+    uint8_t has_colors;
+    uint8_t _pad[2];
+} nxt_model_info;
+
+typedef struct nxt_model_face
+{
+    int32_t a, b, c;        /* vertex indices into the shared pool */
+    int32_t material;       /* render material arg (0 = none; → JS5 index 26) */
+} nxt_model_face;
+
+NXT_API nxt_result nxt_get_model_json(nxt_cache *, int id, char **out_json, size_t *out_len);
+
+/* Fixed-size header/summary; out_info must be non-NULL. */
+NXT_API nxt_result nxt_get_model_info(nxt_cache *cache, int id, nxt_model_info *out_info);
+
+/* Interleaved x,y,z int32 positions; *out_count == vertex_count*3. */
+NXT_API nxt_result nxt_get_model_vertices(nxt_cache *cache, int id,
+                                          int32_t **out_xyz, size_t *out_count);
+
+/* Interleaved x,y,z int8 vertex normals; *out_count == vertex_count*3. */
+NXT_API nxt_result nxt_get_model_normals(nxt_cache *cache, int id,
+                                         int8_t **out_xyz, size_t *out_count);
+
+/* Interleaved u,v float per vertex; *out_count == vertex_count*2. */
+NXT_API nxt_result nxt_get_model_uvs(nxt_cache *cache, int id,
+                                     float **out_uv, size_t *out_count);
+
+/* Per-vertex colour packed as (raw16 << 8) | alpha8; *out_count == vertex_count.
+   Empty (count 0) if the model carries no per-vertex colours. */
+NXT_API nxt_result nxt_get_model_colors(nxt_cache *cache, int id,
+                                        uint32_t **out_colors, size_t *out_count);
+
+/* Triangle list; *out_count == face_count. */
+NXT_API nxt_result nxt_get_model_faces(nxt_cache *cache, int id,
+                                       nxt_model_face **out_faces, size_t *out_count);
+
 /* Generic dispatch — useful for languages with reflection. Same return
    contract as the per-type getters. type_name is one of: "npc", "item",
    "loc", "seq", "varbit", "enum", "struct", "inv", "param", "quest",
-   "underlay", "overlay", "worldmap", "dbrow". */
+   "underlay", "overlay", "worldmap", "dbrow", "sprite", "model". */
 NXT_API nxt_result nxt_get_json(nxt_cache *cache, const char *type_name, int id,
                                 char **out_json, size_t *out_len);
 

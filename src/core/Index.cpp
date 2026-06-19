@@ -341,25 +341,25 @@ char Index::decompress(RSBuffer &buffer)
         }
         else
         {
-            unsigned char type = buffer.readUnsignedByte();
-            std::printf("Decompression type: %d\n", type);
-            if (type == 0)
+            // Not the ZLB container — this is a standard JS5 compression
+            // container ([type][compressedSize:4][...]). The byte we read as
+            // `z` is the JS5 compression type. Hand the full raw blob to
+            // js5::decompress, which handles types 0/1/2/3 (incl. LZMA, used by
+            // index 47 models). Replace the buffer with the decoded payload so
+            // decodeArchiveBlob reads the file offset table from it.
+            try
             {
+                auto decompressed = js5::decompress(
+                    reinterpret_cast<const uint8_t *>(buffer.buffer),
+                    buffer.writePosition);
+                buffer.writeFully(reinterpret_cast<char *>(decompressed.data()),
+                                  decompressed.size());
                 return DECOMPRESSION_OK;
             }
-            else if (type == 1)
+            catch (const std::exception &e)
             {
-                return DECOMPRESSION_OK;
-            }
-            else if (type == 2)
-            {
-                // TODO: gzip
-                return DECOMPRESSION_OK;
-            }
-            else if (type == 3)
-            {
-                // TODO: LZMA
-                return DECOMPRESSION_OK;
+                std::printf("JS5 decompress failed: %s\n", e.what());
+                return FAILED_DECOMPRESSION;
             }
         }
     }

@@ -2,8 +2,8 @@
 
 namespace js5 {
 
-Js5Cache::Js5Cache()
-    : config_(fetchServerConfig()),
+Js5Cache::Js5Cache(bool beta)
+    : config_(beta ? fetchServerConfigBeta() : fetchServerConfig()),
       socket_(std::make_unique<Js5Socket>(config_))
 {
 }

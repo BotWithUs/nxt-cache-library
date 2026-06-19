@@ -16,7 +16,8 @@ namespace js5 {
 class Js5Cache : public CacheSource
 {
 public:
-    Js5Cache();
+    // beta=true hits the BETA jav_config + JS5 endpoint instead of live.
+    explicit Js5Cache(bool beta = false);
 
     Js5Index &index(int id);
 

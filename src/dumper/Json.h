@@ -1,9 +1,13 @@
 #pragma once
 
+#include "config_types/InterfaceTypes.h"
+#include "config_types/ModelType.h"
+#include "config_types/SpriteType.h"
 #include "config_types/Types.h"
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <map>
@@ -347,6 +351,370 @@ inline json toJson(const DbRowType &t)
         {"id", t.id},
         {"tableId", t.tableId},
         {"rows", rows},
+    };
+}
+
+inline json toJson(const ComponentColorState &cs)
+{
+    json j = {
+        {"color1", cs.color1},
+        {"spritePart", cs.spritePart},
+        {"flags", cs.flags},
+        {"alpha", cs.alpha},
+        {"priority", cs.priority},
+        {"color2", cs.color2},
+        {"color3", cs.color3},
+    };
+    if (cs.hasLegacyExtra)
+    {
+        j["legacyExtra"] = {cs.legacyExtra[0], cs.legacyExtra[1], cs.legacyExtra[2], cs.legacyExtra[3]};
+    }
+    return j;
+}
+
+inline json toJson(const ComponentHoverInfo &h)
+{
+    return {
+        {"flags", h.flags},
+        {"leftX", h.leftX},
+        {"leftY", h.leftY},
+        {"states", {toJson(h.states[0]), toJson(h.states[1]), toJson(h.states[2])}},
+    };
+}
+
+inline json toJson(const ComponentTextInfo &t)
+{
+    return {
+        {"textId", t.textId},
+        {"flagBit0", t.flagBit0},
+        {"text", t.text},
+        {"fontSize", t.fontSize},
+        {"fontStyle", t.fontStyle},
+        {"fontEffect", t.fontEffect},
+        {"flagBit1", t.flagBit1},
+        {"color", t.color},
+        {"alpha", t.alpha},
+        {"shadow", t.shadow},
+    };
+}
+
+inline json toJson(const ComponentOption &o)
+{
+    return {
+        {"slot", o.slot},
+        {"contentType", o.contentType},
+        {"actionByte", o.actionByte},
+        {"cursorByte", o.cursorByte},
+    };
+}
+
+inline json toJson(const ComponentEventScript &e)
+{
+    return {{"eventId", e.eventId}, {"script", e.script}};
+}
+
+inline json toJson(const InterfaceComponentDef &c)
+{
+    json options = json::array();
+    for (const auto &o : c.options) options.push_back(toJson(o));
+    json scripts = json::array();
+    for (const auto &e : c.eventScripts) scripts.push_back(toJson(e));
+
+    json j = {
+        {"id", c.id},
+        {"componentType", c.componentType},
+        {"rawTypeByte", c.rawTypeByte},
+        {"flagsByte", c.flagsByte},
+        {"debugName", c.debugName},
+        {"subtype", c.subtype},
+        {"rawX", c.rawX},
+        {"rawY", c.rawY},
+        {"rawWidth", c.rawWidth},
+        {"rawHeight", c.rawHeight},
+        {"aspectWidth", c.aspectWidth},
+        {"aspectHeight", c.aspectHeight},
+        {"widthMode", c.widthMode},
+        {"heightMode", c.heightMode},
+        {"xMode", c.xMode},
+        {"yMode", c.yMode},
+        {"parentScopeId", c.parentScopeId},
+        {"interactFlag", c.interactFlag},
+        {"triggerScriptRef", c.triggerScriptRef},
+        {"miscByte", c.miscByte},
+        {"eventMask", c.eventMask},
+        {"options", options},
+        {"cursorPrimary", c.cursorPrimary},
+        {"cursorSecondary", c.cursorSecondary},
+        {"cursorTertiary", c.cursorTertiary},
+        {"eventScopeId", c.eventScopeId},
+        {"eventScopeMin", c.eventScopeMin},
+        {"eventScopeMax", c.eventScopeMax},
+        {"eventChainId", c.eventChainId},
+        {"eventScripts", scripts},
+        {"tailColor", c.tailColor},
+        {"tailAlpha", c.tailAlpha},
+    };
+
+    // Type-specific blocks — emit only the one relevant to this componentType
+    // so the JSON stays readable.
+    int ct = c.componentType;
+    if (ct == 5 || ct == 9 || ct == 16 || ct == 17 || ct == 27)
+    {
+        j["sprite"] = toJson(c.spriteState);
+    }
+    else if (ct == 6)
+    {
+        j["model"] = {
+            {"id", c.modelId},
+            {"flags", c.modelFlags},
+            {"offsetX", c.modelOffsetX}, {"offsetY", c.modelOffsetY},
+            {"rotateX", c.modelRotateX}, {"rotateY", c.modelRotateY}, {"rotateZ", c.modelRotateZ},
+            {"originX", c.modelOriginX}, {"originY", c.modelOriginY}, {"originZ", c.modelOriginZ},
+            {"zoom", c.modelZoom},
+            {"animId", c.modelAnimId},
+            {"animSecondary", c.modelAnimSecondary},
+            {"animTertiary", c.modelAnimTertiary},
+        };
+    }
+    else if (ct == 10)
+    {
+        j["button"] = {
+            {"toggle", c.buttonToggle},
+            {"clickable", c.buttonClickable},
+            {"highlightColor", c.buttonHighlightColor},
+            {"hover", toJson(c.buttonHover)},
+            {"label", toJson(c.buttonLabel)},
+        };
+    }
+    else if (ct == 11 || ct == 15)
+    {
+        json items = json::array();
+        for (const auto &p : c.listItems) items.push_back({{"label", p.first}, {"id", p.second}});
+        j["list"] = {
+            {"bytes", {c.listBytes[0],c.listBytes[1],c.listBytes[2],c.listBytes[3],
+                       c.listBytes[4],c.listBytes[5],c.listBytes[6],c.listBytes[7]}},
+            {"items", items},
+            {"groups", c.listGroups},
+            {"colorA", c.listColorA}, {"colorB", c.listColorB},
+            {"hover", toJson(c.listHover)},
+            {"label", toJson(c.listLabel)},
+        };
+    }
+    else if (ct == 12)
+    {
+        json items = json::array();
+        for (const auto &p : c.comboItems) items.push_back({{"label", p.first}, {"id", p.second}});
+        j["combo"] = {
+            {"byte777", c.combo777}, {"byte776", c.combo776},
+            {"byte778", c.combo778}, {"byte779", c.combo779},
+            {"items", items},
+            {"selectedId", c.comboSelectedId},
+            {"trailingBytes", {c.comboBytes[0],c.comboBytes[1],c.comboBytes[2],c.comboBytes[3],
+                               c.comboBytes[4],c.comboBytes[5],c.comboBytes[6],c.comboBytes[7]}},
+            {"hover", toJson(c.comboHover)},
+            {"label", toJson(c.comboLabel)},
+        };
+    }
+    else if (ct == 13)
+    {
+        j["input"] = {
+            {"maxLength", c.inputMaxLength},
+            {"flagA", c.inputFlagA}, {"flagB", c.inputFlagB},
+            {"cursorColor", c.inputCursorColor},
+            {"hover", toJson(c.inputHover)},
+            {"label", toJson(c.inputLabel)},
+        };
+    }
+    else if (ct == 14)
+    {
+        j["slider"] = {
+            {"track", c.sliderTrack}, {"fill", c.sliderFill},
+            {"handle", c.sliderHandle},
+            {"shadow1", c.sliderShadow1}, {"shadow2", c.sliderShadow2},
+            {"items", c.sliderItems},
+            {"shorts", {c.sliderShorts[0], c.sliderShorts[1], c.sliderShorts[2],
+                        c.sliderShorts[3], c.sliderShorts[4], c.sliderShorts[5]}},
+            {"label", toJson(c.sliderLabel)},
+        };
+    }
+    else if (ct == 18 || ct == 20 || ct == 21)
+    {
+        j["pages"] = {
+            {"labels", c.pageLabels},
+            {"ids", c.pageIds},
+            {"bytes", {c.pageBytes[0],c.pageBytes[1],c.pageBytes[2],c.pageBytes[3],
+                       c.pageBytes[4],c.pageBytes[5],c.pageBytes[6],c.pageBytes[7]}},
+            {"shortsA", {c.pageShortsA[0],c.pageShortsA[1],c.pageShortsA[2],c.pageShortsA[3]}},
+            {"shortsB", {c.pageShortsB[0],c.pageShortsB[1],c.pageShortsB[2],c.pageShortsB[3]}},
+            {"colorA", c.pageColorA},
+            {"colorB", c.pageColorB},
+        };
+    }
+    else if (ct == 19)
+    {
+        j["component19"] = {
+            {"shorts", {c.c19Shorts[0],c.c19Shorts[1],c.c19Shorts[2],
+                        c.c19Shorts[3],c.c19Shorts[4],c.c19Shorts[5]}},
+            {"flag", c.c19Flag},
+            {"colorA", c.c19ColorA}, {"colorB", c.c19ColorB},
+        };
+    }
+    else if (ct == 22)
+    {
+        json items = json::array();
+        for (const auto &p : c.radioItems) items.push_back({{"label", p.first}, {"id", p.second}});
+        j["radioGroup"] = {
+            {"bytes", {c.radioBytes[0],c.radioBytes[1],c.radioBytes[2],
+                       c.radioBytes[3],c.radioBytes[4],c.radioBytes[5]}},
+            {"items", items},
+            {"selected", c.radioSelected},
+            {"colorA", c.radioColorA}, {"colorB", c.radioColorB},
+        };
+    }
+    else if (ct == 23)
+    {
+        j["groupBox"] = {
+            {"w", c.groupBoxW}, {"h", c.groupBoxH},
+            {"flag", c.groupBoxFlag},
+            {"bytes", {c.groupBoxBytes[0],c.groupBoxBytes[1],c.groupBoxBytes[2],
+                       c.groupBoxBytes[3],c.groupBoxBytes[4]}},
+            {"color", c.groupBoxColor},
+            {"label", toJson(c.groupBoxLabel)},
+        };
+    }
+    else if (ct == 26)
+    {
+        json m = json::object();
+        for (const auto &p : c.crmMap) m[std::to_string(p.first)] = p.second;
+        j["crmView"] = {
+            {"intList", c.crmIntList},
+            {"string", c.crmString},
+            {"flag", c.crmFlag},
+            {"map", m},
+            {"string1", c.crmString1},
+            {"string2", c.crmString2},
+        };
+    }
+    else if (ct == 28)
+    {
+        json entries = json::array();
+        for (const auto &e : c.c28Entries)
+        {
+            entries.push_back({
+                {"key", e.key},
+                {"position", {e.position[0], e.position[1], e.position[2]}},
+                {"rotation", {e.rotation[0], e.rotation[1], e.rotation[2]}},
+                {"scale",    {e.scale[0],    e.scale[1],    e.scale[2]}},
+                {"misc",     {e.misc1, e.misc2, e.misc3}},
+                {"color",    {e.color[0], e.color[1], e.color[2], e.color[3]}},
+                {"flagA", e.flagA}, {"flagB", e.flagB},
+            });
+        }
+        j["component28"] = {{"entries", entries}, {"trailing", c.c28Trailing}};
+    }
+    // Subtype-driven layer variants on type 0/3/4
+    if (c.subtype == 1337 || c.subtype == 1403)
+    {
+        j["box"] = {{"flag", c.boxFlag}};
+    }
+    else if (c.subtype == 1338)
+    {
+        j["cutScene"] = {
+            {"w", c.cutSceneW}, {"h", c.cutSceneH},
+            {"color", c.cutSceneColor},
+            {"shorts", {c.cutSceneShorts[0],c.cutSceneShorts[1],
+                        c.cutSceneShorts[2],c.cutSceneShorts[3]}},
+            {"toggle", c.cutSceneToggle},
+        };
+    }
+    else if (c.subtype == 1400)
+    {
+        j["grid"] = {
+            {"cellW", c.gridCellW}, {"cellH", c.gridCellH},
+            {"hgap", c.gridHGap},
+            {"cols", c.gridCols}, {"rows", c.gridRows},
+            {"flag", c.gridFlag},
+        };
+    }
+    else if (c.subtype == 1401)
+    {
+        j["panel"] = {
+            {"w", c.panelW}, {"h", c.panelH},
+            {"flag", c.panelFlag}, {"byte", c.panelByte},
+        };
+    }
+    else if (c.subtype == 1405)
+    {
+        j["line"] = {{"thickness", c.lineThickness}, {"flag", c.lineFlag}};
+    }
+    return j;
+}
+
+inline json toJson(const InterfaceDef &d)
+{
+    json comps = json::object();
+    for (const auto &[fid, comp] : d.components)
+    {
+        comps[std::to_string(fid)] = toJson(comp);
+    }
+    return {
+        {"id", d.id},
+        {"components", comps},
+    };
+}
+
+// Sprites and models serialise to metadata only — the bulk pixel/geometry data
+// is impractical as JSON and is exposed through the raw C-ABI getters instead.
+
+inline json toJson(const SpriteType &s)
+{
+    json frames = json::array();
+    for (const auto &f : s.frames)
+    {
+        frames.push_back({
+            {"offsetX", f.offsetX}, {"offsetY", f.offsetY},
+            {"width", f.width}, {"height", f.height},
+        });
+    }
+    return {
+        {"id", s.id},
+        {"canvasWidth", s.canvasWidth},
+        {"canvasHeight", s.canvasHeight},
+        {"paletteCount", s.paletteCount},
+        {"frameCount", static_cast<int>(s.frames.size())},
+        {"frames", frames},
+    };
+}
+
+inline json toJson(const ModelType &m)
+{
+    // Distinct material args referenced across render submeshes (→ JS5 index 26).
+    json materials = json::array();
+    std::vector<int> seen;
+    for (const auto &r : m.renders)
+    {
+        if (r.materialArgument == 0) continue;
+        if (std::find(seen.begin(), seen.end(), r.materialArgument) == seen.end())
+        {
+            seen.push_back(r.materialArgument);
+            materials.push_back(r.materialArgument);
+        }
+    }
+    return {
+        {"id", m.id},
+        {"format", m.format},
+        {"version", m.version},
+        {"meshCount", static_cast<int>(m.renders.size())},
+        {"vertexCount", m.vertexCount},
+        {"faceCount", m.totalFaces},
+        {"hasSkins", m.hasSkin},
+        {"hasColors", !m.vertexColors.empty()},
+        {"materialArgs", materials},
+        {"bbox", {
+            {"minX", m.minX}, {"maxX", m.maxX},
+            {"minY", m.minY}, {"maxY", m.maxY},
+            {"minZ", m.minZ}, {"maxZ", m.maxZ},
+        }},
     };
 }
 

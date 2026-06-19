@@ -33,11 +33,12 @@ Index::FallbackFn makeResolver(js5::Js5Socket *socket)
 
 }  // namespace
 
-void RSCache::enableLiveFallback()
+void RSCache::enableLiveFallback(bool beta)
 {
     if (fallbackEnabled_) return;
 
-    liveConfig_ = std::make_unique<js5::ServerConfig>(js5::fetchServerConfig());
+    liveConfig_ = std::make_unique<js5::ServerConfig>(
+        beta ? js5::fetchServerConfigBeta() : js5::fetchServerConfig());
     liveSocket_ = std::make_unique<js5::Js5Socket>(*liveConfig_);
     fallbackEnabled_ = true;
 
@@ -77,4 +78,11 @@ std::vector<int> RSCache::archiveIds(int indexId)
 Archive &RSCache::archive(int indexId, int archiveId)
 {
     return index(indexId).archive(archiveId);
+}
+
+void RSCache::evictArchive(int indexId, int archiveId)
+{
+    auto it = indices.find(indexId);
+    if (it == indices.end()) return;
+    it->second.archives.erase(archiveId);
 }

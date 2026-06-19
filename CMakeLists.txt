@@ -85,6 +85,8 @@ find_package(ZLIB REQUIRED)
 
 find_package(BZip2 REQUIRED)
 
+find_package(LibLZMA REQUIRED)
+
 include(FetchContent)
 
 message(STATUS "Fetching nlohmann_json (v3.11.3)...")
@@ -103,8 +105,14 @@ set(NXTCache_SOURCES
 	cmake.toml
 	"src/c_api/nxtcache_c.cpp"
 	"src/c_api/nxtcache_c.h"
+	"src/config_types/InterfaceTypes.cpp"
+	"src/config_types/InterfaceTypes.h"
+	"src/config_types/ModelType.cpp"
+	"src/config_types/ModelType.h"
 	"src/config_types/ScriptVarType.cpp"
 	"src/config_types/ScriptVarType.h"
+	"src/config_types/SpriteType.cpp"
+	"src/config_types/SpriteType.h"
 	"src/config_types/Types.cpp"
 	"src/config_types/Types.h"
 	"src/core/Archive.cpp"
@@ -160,6 +168,7 @@ target_link_libraries(NXTCache PUBLIC
 	unofficial::sqlite3::sqlite3
 	ZLIB::ZLIB
 	BZip2::BZip2
+	LibLZMA::LibLZMA
 	nlohmann_json::nlohmann_json
 	ws2_32
 	winhttp
