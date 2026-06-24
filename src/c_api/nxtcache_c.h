@@ -106,6 +106,28 @@ NXT_API nxt_result nxt_read_file_raw(nxt_cache *cache,
 NXT_API nxt_result nxt_list_archive_ids(nxt_cache *cache, int index_id,
                                         int **out_ids, size_t *out_count);
 
+/* ---- GameVals (JS5 index 67) -------------------------------------------
+ *
+ * Symbolic id<->name tables for scriptable types (loc, npc, obj, component,
+ * var_player, ...), staged on the beta for Jagex's Lua plugin system. Each
+ * index-67 archive is one type's whole table; the type name maps to a fixed
+ * archive id (see config_types/GameVal.h). Names are stored UPPERCASE. These
+ * require an index-67-bearing cache — open with nxt_cache_open_live_beta() or a
+ * local/openrs2 beta cache. Full format: docs/gameval-index67.md.
+ */
+
+/* One group's table as JSON: { "type", "archive", "count", "entries": { id:name } }.
+   group_name is a canonical name ("loc", "npc", "var_player", ...). Returns
+   NXT_ERR_INVALID for an unknown name, NXT_ERR_NOT_FOUND if the group archive is
+   absent. NUL-terminated UTF-8; free *out_json with nxt_free. */
+NXT_API nxt_result nxt_get_gameval_group_json(nxt_cache *cache, const char *group_name,
+                                              char **out_json, size_t *out_len);
+
+/* Every gameval group in one document:
+   { "index":67, "total":N, "groups": { "loc": {archive,count,entries}, ... } }.
+   NUL-terminated UTF-8; free *out_json with nxt_free. */
+NXT_API nxt_result nxt_dump_gamevals_json(nxt_cache *cache, char **out_json, size_t *out_len);
+
 /* ---- Map collision ------------------------------------------------------
  *
  * Decode the directional clip grid for one map square (cache index 5). The

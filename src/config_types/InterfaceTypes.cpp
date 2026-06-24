@@ -40,6 +40,19 @@ uint32_t readBeU32(RSBuffer &buf)
     return static_cast<uint32_t>(buf.readInt());
 }
 
+// Clamp a decoded element count to the bytes left in the buffer. Every array
+// element costs at least one byte and its data follows the count, so a real
+// count can never exceed `remaining()`. A desynced tail, however, can read a
+// bogus 16-bit count (up to 65535) from misaligned bytes and then emit tens of
+// thousands of empty rows. Clamping bounds that damage without ever truncating a
+// legitimate array (whose elements are really present in the remaining bytes).
+int clampCount(RSBuffer &buf, int n)
+{
+    if (n < 0) return 0;
+    int rem = static_cast<int>(buf.remaining());
+    return n < rem ? n : rem;
+}
+
 // sub_289D30 — the universal ColorState sub-record. 16 bytes (4 + 2 + 1 +
 // 1 + 1 + 4 + 1 + 1 + 4 wait that's 19 — let me recount: u32 + u16 + u8 + u8
 // + u8 + u32 + u8 + u8 + u32 = 4+2+1+1+1+4+1+1+4 = 19 bytes legacy; +4 for
@@ -357,7 +370,7 @@ void tailCombo(RSBuffer &buf, InterfaceComponentDef &c, int ct)
     c.combo776 = buf.readUnsignedByte();
     c.combo778 = buf.readUnsignedByte();
     c.combo779 = buf.readUnsignedByte();
-    int n = buf.readUnsignedShort();
+    int n = clampCount(buf, buf.readUnsignedShort());
     c.comboItems.resize(n);
     for (int i = 0; i < n; i++) c.comboItems[i].first = buf.readString();
     int ni = buf.readUnsignedShort();
@@ -415,7 +428,7 @@ void tailList(RSBuffer &buf, InterfaceComponentDef &c, int ct)
         c.listBytes[6] = buf.readUnsignedByte();
     }
     c.listBytes[7] = buf.readUnsignedByte();  // last "byte0" pair
-    int n = buf.readUnsignedShort();
+    int n = clampCount(buf, buf.readUnsignedShort());
     c.listItems.resize(n);
     for (int i = 0; i < n; i++) c.listItems[i].first = buf.readString();
     int ni = buf.readUnsignedShort();
@@ -423,7 +436,7 @@ void tailList(RSBuffer &buf, InterfaceComponentDef &c, int ct)
     {
         for (int i = 0; i < n; i++) c.listItems[i].second = readBeU32(buf);
     }
-    int ng = buf.readUnsignedShort();
+    int ng = clampCount(buf, buf.readUnsignedShort());
     c.listGroups.resize(ng);
     for (int i = 0; i < ng; i++) c.listGroups[i] = buf.readUnsignedShort();
     if (ct >= 9)
@@ -457,7 +470,7 @@ void tailSlider(RSBuffer &buf, InterfaceComponentDef &c, int ct)
     c.sliderHandle = readBeU32(buf);
     c.sliderShadow1 = readBeU32(buf);
     c.sliderShadow2 = readBeU32(buf);
-    int n = buf.readUnsignedShort();
+    int n = clampCount(buf, buf.readUnsignedShort());
     c.sliderItems.resize(n);
     for (int i = 0; i < n; i++) c.sliderItems[i] = buf.readString();
     for (int i = 0; i < 6; i++) c.sliderShorts[i] = buf.readUnsignedShort();
@@ -473,10 +486,10 @@ void tailSlider(RSBuffer &buf, InterfaceComponentDef &c, int ct)
 void tailCarousel(RSBuffer &buf, InterfaceComponentDef &c, int ct)
 {
     c.interactFlag |= buf.readUnsignedByte();
-    int n = buf.readUnsignedShort();
+    int n = clampCount(buf, buf.readUnsignedShort());
     c.pageLabels.resize(n);
     for (int i = 0; i < n; i++) c.pageLabels[i] = buf.readString();
-    int n2 = buf.readUnsignedShort();
+    int n2 = clampCount(buf, buf.readUnsignedShort());
     c.pageIds.resize(n2);
     for (int i = 0; i < n2; i++) c.pageIds[i] = readBeU32(buf);
     int ni = buf.readUnsignedShort();
@@ -598,7 +611,7 @@ void tailRadioGroup(RSBuffer &buf, InterfaceComponentDef &c, int ct)
 {
     c.interactFlag |= buf.readUnsignedByte();
     for (int i = 0; i < 6; i++) c.radioBytes[i] = buf.readUnsignedByte();
-    int n = buf.readUnsignedShort();
+    int n = clampCount(buf, buf.readUnsignedShort());
     c.radioItems.resize(n);
     for (int i = 0; i < n; i++) c.radioItems[i].first = buf.readString();
     (void) buf.readUnsignedShort(); // padding short
@@ -625,12 +638,12 @@ void tailRadioGroup(RSBuffer &buf, InterfaceComponentDef &c, int ct)
 void tailCRMView(RSBuffer &buf, InterfaceComponentDef &c, int ct)
 {
     c.interactFlag |= buf.readUnsignedByte();
-    int n = buf.readUnsignedShort();
+    int n = clampCount(buf, buf.readUnsignedShort());
     c.crmIntList.resize(n);
     for (int i = 0; i < n; i++) c.crmIntList[i] = readBeU32(buf);
     c.crmString = buf.readString();
     c.crmFlag = buf.readUnsignedByte();
-    int n2 = buf.readUnsignedShort();
+    int n2 = clampCount(buf, buf.readUnsignedShort());
     std::vector<std::string> tmp;
     tmp.resize(n2);
     for (int i = 0; i < n2; i++) tmp[i] = buf.readString();
@@ -649,7 +662,7 @@ void tailCRMView(RSBuffer &buf, InterfaceComponentDef &c, int ct)
 
 void tailComponent28(RSBuffer &buf, InterfaceComponentDef &c, int)
 {
-    int n = buf.readUnsignedShort();
+    int n = clampCount(buf, buf.readUnsignedShort());
     c.c28Entries.resize(n);
     for (int i = 0; i < n; i++)
     {

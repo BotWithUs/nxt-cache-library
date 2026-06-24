@@ -26,7 +26,7 @@ inline const std::map<std::string, TypeMapping> &typeDefaults()
         {"seq",      {"seq",      20, -1,  7}},
         {"varbit",   {"varbit",    2, 69,  0}},
         {"enum",     {"enum",     17, -1,  8}},
-        {"struct",   {"struct",   26, -1, 10}},
+        {"struct",   {"struct",   22, -1,  5}},
         {"inv",      {"inv",       2,  5,  0}},
         {"param",    {"param",     2, 11,  0}},
         {"quest",    {"quest",     2, 35,  0}},
@@ -49,6 +49,11 @@ inline const std::map<std::string, TypeMapping> &typeDefaults()
         // sentinels; the C-ABI interface getter ignores TypeMapping fields
         // and addresses the archive directly.
         {"if",       {"if",        3, -1,  0}},
+        // GameVals: cache index 67, one archive per type (archive id = a fixed
+        // GameValGroupType ordinal), each archive holds a single id->name table
+        // file. archiveId=-1 = sweep all groups; the dumper's gameval path uses
+        // a dedicated decoder (config_types/GameVal.h), not the shard loader.
+        {"gameval",  {"gameval",  67, -1,  0}},
     };
     return kDefaults;
 }

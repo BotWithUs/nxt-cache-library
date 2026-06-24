@@ -33,4 +33,9 @@ public:
     explicit SpriteType() : id(-1) {}
 
     void decode(RSBuffer &buffer);
+
+private:
+    // RS3 truecolor variant (trailer high-bit set): a single full-colour image
+    // (RGB or RGBA) with a front-loaded header, not a palette-indexed group.
+    void decodeTrueColor(RSBuffer &buffer, unsigned int len);
 };

@@ -89,6 +89,21 @@ struct MapSquareClip
     uint8_t planeMask{};
 };
 
+// One decoded location (scenery) placement from a map square's location stream
+// (index 5, file 0), with its position resolved to absolute world tiles. Unlike
+// Crossing this is not filtered to interactable scenery and carries no loc def
+// lookup — it is the raw placement, for offline tooling that locates a loc id in
+// the world (e.g. dumping the coordinates of a named object).
+struct LocSpawn
+{
+    int objectId;   // loc type id placed here
+    int worldX;     // absolute world tile (square base + local)
+    int worldY;
+    int plane;      // 0..3, as stored in the placement (no bridge adjustment)
+    int shape;      // RT4 loc shape
+    int rotation;   // 0..3
+};
+
 // Memoizes the cache lookups buildMapSquareClip performs so iterating many squares
 // does not re-decode location defs and overlays shared between them. Pass the same
 // instance across calls; it is bound to one CacheSource for its lifetime.
@@ -111,5 +126,13 @@ struct DefCache
 bool buildMapSquareClip(CacheSource &source, int squareX, int squareY,
                         DefCache &defs, MapSquareClip &outClip,
                         std::vector<Crossing> *outCrossings = nullptr);
+
+// Decodes the location stream (file 0) of the map square at (squareX, squareY)
+// and returns every placement as an absolute-world-coordinate LocSpawn. Returns
+// an empty vector when the square is absent or has no location file. This is a
+// standalone read path: it does NOT resolve loc defs, terrain, collision, or
+// bridges — it exists for offline tools that need to find where a loc id is
+// placed in the world, independent of the WorldWalker clip path.
+std::vector<LocSpawn> buildMapSquareLocs(CacheSource &source, int squareX, int squareY);
 
 }  // namespace maps

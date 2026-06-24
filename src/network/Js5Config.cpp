@@ -67,7 +67,8 @@ ServerConfig parseConfig(const std::string &body)
     {
         throw std::runtime_error("jav_config: missing param block");
     }
-    for (const auto &[k, v] : paramIt->second)
+    const auto &params = paramIt->second;
+    for (const auto &[k, v] : params)
     {
         if (v.size() == 32)
         {
@@ -78,6 +79,20 @@ ServerConfig parseConfig(const std::string &body)
     if (out.key.empty())
     {
         throw std::runtime_error("jav_config: 32-char cache key not found in param");
+    }
+
+    // The JS5 content host is advertised in the param block (param=37, with
+    // param=49 as a fallback). The live and beta configs point at different
+    // hosts (content.runescape.com vs content.beta.runescape.com), so we must
+    // honour what the config says rather than assume the default endpoint.
+    auto hostIt = params.find("37");
+    if (hostIt == params.end())
+    {
+        hostIt = params.find("49");
+    }
+    if (hostIt != params.end() && !hostIt->second.empty())
+    {
+        out.endpoint = hostIt->second;
     }
     return out;
 }
@@ -94,7 +109,14 @@ ServerConfig fetchServerConfig()
 
 ServerConfig fetchServerConfigBeta()
 {
-    std::string body = httpGet("world1.runescape.com",
+    // The gameval/Lua beta (which carries cache index 67) is served from
+    // www.runescape.com's jav_config_beta — NOT world1's, which tracks a
+    // near-live build (currently 948) on content.runescape.com and has no
+    // index 67. www's beta config reports the real beta build (currently 947)
+    // and points param=37 at content.beta.runescape.com. The 32-char cache key
+    // rotates on every request, so this single fetch must feed the handshake
+    // directly (no caching between fetch and connect).
+    std::string body = httpGet("www.runescape.com",
                                 "/jav_config_beta.ws?binaryType=3",
                                 /*useTls=*/true);
     return parseConfig(body);

@@ -844,4 +844,35 @@ bool buildMapSquareClip(CacheSource &source, int squareX, int squareY,
     return true;
 }
 
+std::vector<LocSpawn> buildMapSquareLocs(CacheSource &source, int squareX, int squareY)
+{
+    std::vector<LocSpawn> result;
+
+    int archiveId = (squareX & 0x7F) | (squareY << 7);
+    Archive &archive = source.archive(kMapIndex, archiveId);
+    if (archive.id == -1 || archive.files.count(kLocationFile) == 0)
+    {
+        return result;
+    }
+
+    RSBuffer buffer = archive.readFile(kLocationFile);
+    if (buffer.buffer == nullptr || buffer.remaining() == 0)
+    {
+        return result;
+    }
+
+    const int worldBaseX = squareX * MapSquareClip::SIZE;
+    const int worldBaseY = squareY * MapSquareClip::SIZE;
+
+    std::vector<LocPlacement> placements =
+        decodeLocationData(buffer.buffer + buffer.readPosition, buffer.remaining());
+    result.reserve(placements.size());
+    for (const LocPlacement &loc : placements)
+    {
+        result.push_back({loc.objectId, worldBaseX + loc.localX, worldBaseY + loc.localY,
+                          loc.plane, loc.shape, loc.rotation});
+    }
+    return result;
+}
+
 }  // namespace maps

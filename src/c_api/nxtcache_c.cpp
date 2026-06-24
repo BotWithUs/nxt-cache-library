@@ -2,6 +2,7 @@
 
 #include "c_api/nxtcache_c.h"
 
+#include "config_types/GameVal.h"
 #include "config_types/InterfaceTypes.h"
 #include "config_types/ModelType.h"
 #include "config_types/SpriteType.h"
@@ -251,6 +252,34 @@ std::vector<int> enumerateTypeIds(CacheSource &cs, const std::string &typeName,
     }
     std::sort(ids.begin(), ids.end());
     return ids;
+}
+
+// Build the {archive,count,entries} JSON object for one gameval group (index-67
+// archive). Returns null json if the group's archive or single file is absent.
+// Shared by the single-group and dump-all C-ABI getters.
+json buildGameValGroup(CacheSource &cs, int archiveId)
+{
+    auto &archive = cs.archive(nxt::kGameValIndex, archiveId);
+    if (archive.id == -1)
+    {
+        return nullptr;
+    }
+    auto buffer = archive.readFile(0);
+    if (buffer.buffer == nullptr || buffer.remaining() == 0)
+    {
+        return nullptr;
+    }
+    auto entries = nxt::decodeGameVals(buffer);
+    json e = json::object();
+    for (const auto &en : entries)
+    {
+        e[std::to_string(en.id)] = en.name;
+    }
+    return json{
+        {"archive", archiveId},
+        {"count", static_cast<int>(entries.size())},
+        {"entries", std::move(e)},
+    };
 }
 
 }  // namespace
@@ -511,6 +540,93 @@ nxt_result nxt_list_archive_ids(nxt_cache *handle, int index_id,
     {
         setError(std::string("list_archive_ids failed: ") + e.what());
         return NXT_ERR_IO;
+    }
+}
+
+nxt_result nxt_get_gameval_group_json(nxt_cache *handle, const char *group_name,
+                                      char **out_json, size_t *out_len)
+{
+    if (!handle || !group_name || !out_json || !out_len)
+    {
+        setError("invalid argument");
+        return NXT_ERR_INVALID;
+    }
+    int aid = nxt::gameValGroupArchive(group_name);
+    if (aid < 0)
+    {
+        setError(std::string("unknown gameval group: ") + group_name);
+        return NXT_ERR_INVALID;
+    }
+    auto *c = reinterpret_cast<Cache *>(handle);
+    try
+    {
+        json group = buildGameValGroup(*c->source, aid);
+        if (group.is_null())
+        {
+            setError(std::string("gameval group not found: ") + group_name);
+            return NXT_ERR_NOT_FOUND;
+        }
+        group["type"] = group_name;
+        std::string s = group.dump();
+        char *buf = dupString(s);
+        if (!buf)
+        {
+            setError("malloc failed");
+            return NXT_ERR_INTERNAL;
+        }
+        *out_json = buf;
+        *out_len = s.size();
+        return NXT_OK;
+    }
+    catch (const std::exception &ex)
+    {
+        setError(std::string("gameval decode failed: ") + ex.what());
+        return NXT_ERR_DECODE;
+    }
+}
+
+nxt_result nxt_dump_gamevals_json(nxt_cache *handle, char **out_json, size_t *out_len)
+{
+    if (!handle || !out_json || !out_len)
+    {
+        setError("invalid argument");
+        return NXT_ERR_INVALID;
+    }
+    auto *c = reinterpret_cast<Cache *>(handle);
+    try
+    {
+        json groups = json::object();
+        long long total = 0;
+        for (const auto &[aid, name] : nxt::gameValGroups())
+        {
+            json group = buildGameValGroup(*c->source, aid);
+            if (group.is_null())
+            {
+                continue;
+            }
+            total += group.value("count", 0);
+            groups[name] = std::move(group);
+        }
+        json doc = {
+            {"index", nxt::kGameValIndex},
+            {"total", total},
+            {"groups", std::move(groups)},
+        };
+        std::string s = doc.dump();
+        char *buf = dupString(s);
+        if (!buf)
+        {
+            setError("malloc failed");
+            return NXT_ERR_INTERNAL;
+        }
+        *out_json = buf;
+        *out_len = s.size();
+        return NXT_OK;
+    }
+    catch (const std::exception &ex)
+    {
+        setError(std::string("gameval dump failed: ") + ex.what());
+        return NXT_ERR_DECODE;
     }
 }
 

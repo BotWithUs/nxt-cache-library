@@ -1,3 +1,4 @@
+#include "config_types/GameVal.h"
 #include "config_types/InterfaceTypes.h"
 #include "config_types/ModelType.h"
 #include "config_types/SpriteType.h"
@@ -9,6 +10,7 @@
 #include "core/RSCache.h"
 #include "core/TypeMappings.h"
 #include "dumper/Json.h"
+#include "maps/MapSquare.h"
 #include "network/Js5Cache.h"
 #include "render/IconRenderer.h"
 
@@ -44,10 +46,15 @@ void usage(const char *prog)
         << "Required:\n"
         << "  --type <name>       npc | item | loc | seq | varbit | enum | struct |\n"
         << "                      inv | param | quest | underlay | overlay |\n"
-        << "                      worldmap | dbrow | if | sprite | model | itemicon\n"
+        << "                      worldmap | dbrow | if | sprite | model | itemicon |\n"
+        << "                      gameval | locspawn\n"
         << "                      (sprite/model emit metadata only; pixel/geometry\n"
         << "                       bulk data is exposed via the C ABI. itemicon\n"
-        << "                       renders an item's inventory icon to a BMP.)\n"
+        << "                       renders an item's inventory icon to a BMP.\n"
+        << "                       gameval dumps the index-67 id->name tables; it is\n"
+        << "                       beta-only, so pair it with --beta.\n"
+        << "                       locspawn scans the map squares (index 5) for the\n"
+        << "                       world coordinates of the loc ids given in --ids.)\n"
         << "\n"
         << "Source (pick one; default: local):\n"
         << "  --cache <path>      Read from local sqlite jcache (js5-*.jcache files)\n"
@@ -55,9 +62,13 @@ void usage(const char *prog)
         << "  --source local      (default) same as --cache\n"
         << "  --fallback live     With --cache, transparently pull missing archives\n"
         << "                      from the live JS5 source\n"
+        << "  --beta              Use the beta JS5 endpoint (build 947,\n"
+        << "                      content.beta.runescape.com) for --source live or\n"
+        << "                      --fallback live. Required for --type gameval.\n"
         << "\n"
         << "Optional:\n"
         << "  --id <n>            Dump a single id (default: dump all known)\n"
+        << "  --ids <a,b,c>       Comma-separated id list (used by --type locspawn)\n"
         << "  --limit <n>         Maximum number of entries to dump\n"
         << "  --index <n>         Override default JS5 index id\n"
         << "  --archive <n>       Override default archive id (-1 = sharded)\n"
@@ -68,8 +79,9 @@ void usage(const char *prog)
         << "  --ss <n>            itemicon: supersampling factor 1..8 (default 4)\n"
         << "  --bg <RRGGBB>       itemicon: composite over this hex colour\n"
         << "                      (default: transparent background)\n"
-        << "  --out-dir <path>    For --type if only: write one\n"
-        << "                      interface-<id>.json per archive into <path>.\n"
+        << "  --out-dir <path>    For --type if: write one interface-<id>.json per\n"
+        << "                      archive into <path>. For --type gameval: write one\n"
+        << "                      <groupname>.json per gameval type into <path>.\n"
         << "                      Each interface is decoded, written, and evicted\n"
         << "                      from memory before the next is read — required\n"
         << "                      for bulk dumps (the in-memory array swallows tens\n"
@@ -154,6 +166,57 @@ json dumpRange(CacheSource &cache, const TypeMapping &m,
         }
     }
     return out;
+}
+
+// Stream a sharded bulk type to `out` one decoded entry at a time, evicting each
+// archive after use so peak memory stays bounded by a single entry instead of the
+// whole dataset. Used for the metadata-only bulk types (sprite, model) whose full
+// in-memory JSON array can exhaust RAM. Emits the same envelope as dumpRange with
+// `count` written last, since it is only known once the sweep finishes.
+template<typename T>
+long streamShardedToFile(CacheSource &cache, const std::string &typeName,
+                         const TypeMapping &m, std::optional<int> limit,
+                         bool pretty, std::ofstream &out)
+{
+    out << "{\n\"type\": \"" << typeName << "\",\n"
+        << "\"index\": " << m.indexId << ",\n"
+        << "\"archive\": " << m.archiveId << ",\n"
+        << "\"shift\": " << m.shift << ",\n"
+        << "\"entries\": [";
+
+    long count = 0;
+    bool first = true;
+    std::vector<int> aids = cache.archiveIds(m.indexId);
+    for (int aid: aids)
+    {
+        if (limit && count >= *limit)
+        {
+            break;
+        }
+        auto &archive = cache.archive(m.indexId, aid);
+        if (archive.id != -1)
+        {
+            for (auto &[fid, fh]: archive.files)
+            {
+                if (limit && count >= *limit)
+                {
+                    break;
+                }
+                int actualId = (aid << m.shift) | fid;
+                json entry = decodeFile<T>(archive, fid, actualId);
+                if (!entry.is_null())
+                {
+                    out << (first ? "\n" : ",\n") << (pretty ? entry.dump(2) : entry.dump());
+                    first = false;
+                    count++;
+                }
+            }
+        }
+        cache.evictArchive(m.indexId, aid);
+    }
+
+    out << "\n],\n\"count\": " << count << "\n}\n";
+    return count;
 }
 
 json dumpDbRows(CacheSource &cache, const TypeMapping &m,
@@ -298,6 +361,40 @@ bool writeBmp24(const std::string &path, const std::vector<uint8_t> &rgba,
     return static_cast<bool>(f);
 }
 
+// Decode one gameval group (index-67 archive) into
+// { "archive", "type", "count", "entries": { id: "NAME" } }. Returns null json
+// if the archive or its single table file is absent.
+json gameValGroupJson(CacheSource &cache, int archiveId)
+{
+    auto &archive = cache.archive(nxt::kGameValIndex, archiveId);
+    if (archive.id == -1)
+    {
+        return nullptr;
+    }
+    auto buffer = archive.readFile(0);
+    if (buffer.buffer == nullptr || buffer.remaining() == 0)
+    {
+        return nullptr;
+    }
+    auto entries = nxt::decodeGameVals(buffer);
+    json e = json::object();
+    for (const auto &en : entries)
+    {
+        e[std::to_string(en.id)] = en.name;
+    }
+    std::string name = nxt::gameValGroupName(archiveId);
+    if (name.empty())
+    {
+        name = "archive_" + std::to_string(archiveId);
+    }
+    return json{
+        {"archive", archiveId},
+        {"type", name},
+        {"count", static_cast<int>(entries.size())},
+        {"entries", std::move(e)},
+    };
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -306,8 +403,10 @@ int main(int argc, char **argv)
     std::string typeName;
     std::string outPath;
     std::string outDir;
+    std::string idsArg;
     std::string sourceMode = "local";
     std::string fallbackMode;
+    bool beta = false;
     std::optional<int> id;
     std::optional<int> limit;
     std::optional<int> indexOverride;
@@ -349,8 +448,10 @@ int main(int argc, char **argv)
         else if (a == "--cache")    cachePath = takeArg(i, "--cache");
         else if (a == "--source")   sourceMode = takeArg(i, "--source");
         else if (a == "--fallback") fallbackMode = takeArg(i, "--fallback");
+        else if (a == "--beta")     beta = true;
         else if (a == "--type")     typeName  = takeArg(i, "--type");
         else if (a == "--id")       id              = takeIntArg(i, "--id");
+        else if (a == "--ids")      idsArg          = takeArg(i, "--ids");
         else if (a == "--limit")    limit           = takeIntArg(i, "--limit");
         else if (a == "--index")    indexOverride   = takeIntArg(i, "--index");
         else if (a == "--archive")  archiveOverride = takeIntArg(i, "--archive");
@@ -393,10 +494,12 @@ int main(int argc, char **argv)
     }
 
     const auto &kDefaults = nxt::typeDefaults();
-    // "itemicon" is a render mode, not a config type, so it has no TypeMapping.
+    // "itemicon" (render mode) and "locspawn" (map-square scan) are not config
+    // types, so they have no TypeMapping.
     const bool isItemIcon = (typeName == "itemicon");
+    const bool isLocSpawn = (typeName == "locspawn");
     TypeMapping m{};
-    if (!isItemIcon)
+    if (!isItemIcon && !isLocSpawn)
     {
         auto it = kDefaults.find(typeName);
         if (it == kDefaults.end())
@@ -428,9 +531,10 @@ int main(int argc, char **argv)
     {
         if (sourceMode == "live")
         {
-            auto live = std::make_unique<js5::Js5Cache>();
-            std::cerr << "Connected to live JS5 (build "
-                      << live->serverConfig().serverVersionMajor << ")\n";
+            auto live = std::make_unique<js5::Js5Cache>(beta);
+            std::cerr << "Connected to " << (beta ? "BETA" : "live") << " JS5 (build "
+                      << live->serverConfig().serverVersionMajor << " @ "
+                      << live->serverConfig().endpoint << ")\n";
             cache = std::move(live);
         }
         else
@@ -438,8 +542,8 @@ int main(int argc, char **argv)
             auto local = std::make_unique<RSCache>(cachePath);
             if (fallbackMode == "live")
             {
-                local->enableLiveFallback();
-                std::cerr << "Live JS5 fallback enabled\n";
+                local->enableLiveFallback(beta);
+                std::cerr << (beta ? "BETA" : "Live") << " JS5 fallback enabled\n";
             }
             cache = std::move(local);
         }
@@ -536,6 +640,205 @@ int main(int argc, char **argv)
         }
     }
 
+    // Loc-spawn scan: --type locspawn --ids <a,b,c> [--id <n>]. Decodes the
+    // location stream (file 0) of every present map square (cache index 5) and
+    // emits the absolute world coordinates of each placement whose loc id is in
+    // the requested set. Offline tool to locate a loc id (e.g. an Energy rift)
+    // in the world. Only locally-present squares are scanned (archiveIds), so it
+    // does not trigger a live-fetch storm even with --fallback live.
+    if (isLocSpawn)
+    {
+        std::vector<int> wanted;
+        if (id)
+        {
+            wanted.push_back(*id);
+        }
+        if (!idsArg.empty())
+        {
+            std::size_t start = 0;
+            while (true)
+            {
+                std::size_t comma = idsArg.find(',', start);
+                std::string tok = idsArg.substr(
+                    start, comma == std::string::npos ? std::string::npos : comma - start);
+                if (!tok.empty())
+                {
+                    int v = 0;
+                    if (!parseInt(tok, v))
+                    {
+                        std::cerr << "Invalid id in --ids: '" << tok << "'\n";
+                        return 2;
+                    }
+                    wanted.push_back(v);
+                }
+                if (comma == std::string::npos) break;
+                start = comma + 1;
+            }
+        }
+        if (wanted.empty())
+        {
+            std::cerr << "--type locspawn requires --ids <a,b,c> (or --id <n>)\n";
+            return 2;
+        }
+
+        constexpr int kMapsIndex = 5;
+        json entries = json::array();
+        try
+        {
+            std::vector<int> aids = cache->archiveIds(kMapsIndex);
+            for (int aid : aids)
+            {
+                int sqx = aid & 0x7F;
+                int sqy = aid >> 7;
+                std::vector<maps::LocSpawn> locs = maps::buildMapSquareLocs(*cache, sqx, sqy);
+                for (const maps::LocSpawn &l : locs)
+                {
+                    if (std::find(wanted.begin(), wanted.end(), l.objectId) == wanted.end())
+                    {
+                        continue;
+                    }
+                    entries.push_back({
+                        {"id", l.objectId},
+                        {"x", l.worldX},
+                        {"y", l.worldY},
+                        {"plane", l.plane},
+                        {"shape", l.shape},
+                        {"rotation", l.rotation},
+                        {"square_x", sqx},
+                        {"square_y", sqy},
+                    });
+                }
+                cache->evictArchive(kMapsIndex, aid);
+            }
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "locspawn scan failed: " << e.what() << "\n";
+            return 1;
+        }
+
+        json envelope = {
+            {"type", "locspawn"},
+            {"index", kMapsIndex},
+            {"count", entries.size()},
+            {"entries", std::move(entries)},
+        };
+        std::string serialized = pretty ? envelope.dump(2) : envelope.dump();
+        if (outPath.empty())
+        {
+            std::cout << serialized << std::endl;
+        }
+        else
+        {
+            std::ofstream f(outPath, std::ios::binary);
+            if (!f)
+            {
+                std::cerr << "Failed to open output file: " << outPath << "\n";
+                return 1;
+            }
+            f << serialized;
+        }
+        return 0;
+    }
+
+    // GameVals: cache index 67, one archive per type, each archive a single
+    // id->name table file. --out-dir writes one <type>.json per group; otherwise
+    // everything goes in one { type, index, total, groups } document. --archive
+    // (or --id) limits the dump to a single group.
+    if (typeName == "gameval")
+    {
+        if (!beta && sourceMode == "live")
+        {
+            std::cerr << "warning: gamevals (index 67) are beta-only; "
+                         "live (non-beta) JS5 has no index 67 — add --beta\n";
+        }
+
+        std::vector<int> groupIds;
+        if (archiveOverride)
+        {
+            groupIds.push_back(*archiveOverride);
+        }
+        else if (id)
+        {
+            groupIds.push_back(*id);
+        }
+        else
+        {
+            groupIds = cache->archiveIds(m.indexId);
+        }
+
+        try
+        {
+            if (!outDir.empty())
+            {
+                std::filesystem::create_directories(outDir);
+                int written = 0;
+                for (int aid : groupIds)
+                {
+                    json g = gameValGroupJson(*cache, aid);
+                    if (g.is_null())
+                    {
+                        continue;
+                    }
+                    std::string name = g.value("type", "archive_" + std::to_string(aid));
+                    std::string s = pretty ? g.dump(2) : g.dump();
+                    std::ofstream f(std::filesystem::path(outDir) / (name + ".json"),
+                                    std::ios::binary);
+                    if (!f)
+                    {
+                        std::cerr << "Failed to open output for " << name << "\n";
+                        return 1;
+                    }
+                    f << s;
+                    written++;
+                }
+                std::cerr << "Wrote " << written << " gameval group files to " << outDir << "\n";
+                return 0;
+            }
+
+            json groups = json::object();
+            long long total = 0;
+            for (int aid : groupIds)
+            {
+                json g = gameValGroupJson(*cache, aid);
+                if (g.is_null())
+                {
+                    continue;
+                }
+                std::string name = g.value("type", "archive_" + std::to_string(aid));
+                total += g.value("count", 0);
+                groups[name] = std::move(g);
+            }
+            json envelope = {
+                {"type", "gameval"},
+                {"index", m.indexId},
+                {"total", total},
+                {"groups", std::move(groups)},
+            };
+            std::string serialized = pretty ? envelope.dump(2) : envelope.dump();
+            if (outPath.empty())
+            {
+                std::cout << serialized << std::endl;
+            }
+            else
+            {
+                std::ofstream f(outPath, std::ios::binary);
+                if (!f)
+                {
+                    std::cerr << "Failed to open output file: " << outPath << "\n";
+                    return 1;
+                }
+                f << serialized;
+            }
+            return 0;
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "GameVal dump failed: " << e.what() << "\n";
+            return 1;
+        }
+    }
+
     // Streaming path: --type if --out-dir <path>. Write one
     // interface-<id>.json per archive and evict the archive between files so
     // peak RSS stays bounded by the largest single interface.
@@ -565,26 +868,10 @@ int main(int argc, char **argv)
                 auto &archive = cache->archive(m.indexId, aid);
                 if (archive.id == -1) { skipped++; continue; }
 
-                InterfaceDef def;
-                def.id = aid;
-                for (auto &[fid, fh] : archive.files)
-                {
-                    auto buffer = archive.readFile(fid);
-                    if (buffer.buffer == nullptr || buffer.remaining() == 0) continue;
-                    InterfaceComponentDef comp;
-                    comp.id = fid;
-                    comp.decode(buffer);
-                    def.components.emplace(fid, std::move(comp));
-                }
-                if (def.components.empty())
-                {
-                    cache->evictArchive(m.indexId, aid);
-                    skipped++;
-                    continue;
-                }
-
-                json doc = nxtdump::toJson(def);
-                std::string s = pretty ? doc.dump(2) : doc.dump();
+                // Stream one component at a time (decode -> serialise -> write) so a
+                // single interface never materialises a whole multi-component JSON
+                // tree in memory. A few interfaces decode to gigabytes; building the
+                // tree up-front exhausts RAM and balloons the pagefile.
                 std::filesystem::path file =
                     std::filesystem::path(outDir) / ("interface-" + std::to_string(aid) + ".json");
                 std::ofstream f(file, std::ios::binary);
@@ -593,10 +880,32 @@ int main(int argc, char **argv)
                     std::cerr << "Failed to open " << file << "\n";
                     return 1;
                 }
-                f << s;
+                f << "{\n\"id\": " << aid << ",\n\"components\": {";
+                bool first = true;
+                int comps = 0;
+                for (auto &[fid, fh] : archive.files)
+                {
+                    auto buffer = archive.readFile(fid);
+                    if (buffer.buffer == nullptr || buffer.remaining() == 0) continue;
+                    InterfaceComponentDef comp;
+                    comp.id = fid;
+                    comp.decode(buffer);
+                    json cj = nxtdump::toJson(comp);
+                    f << (first ? "\n" : ",\n") << "\"" << fid << "\": "
+                      << (pretty ? cj.dump(2) : cj.dump());
+                    first = false;
+                    comps++;
+                }
+                f << "\n}\n}\n";
                 f.close();
 
                 cache->evictArchive(m.indexId, aid);
+                if (comps == 0)
+                {
+                    std::filesystem::remove(file);
+                    skipped++;
+                    continue;
+                }
                 written++;
                 if (written % 50 == 0)
                 {
@@ -611,6 +920,38 @@ int main(int argc, char **argv)
             std::cerr << "Stream-dump failed: " << e.what() << "\n";
             return 1;
         }
+    }
+
+    // Bulk metadata-only types (sprite, model) stream to file one entry at a time
+    // so the in-memory JSON array can never grow to the whole dataset. A few sprite
+    // archives carry thousands of frames; accumulating every entry exhausts RAM.
+    if ((typeName == "sprite" || typeName == "model") && !outPath.empty() && !id)
+    {
+        std::ofstream f(outPath, std::ios::binary);
+        if (!f)
+        {
+            std::cerr << "Failed to open output file: " << outPath << "\n";
+            return 1;
+        }
+        long n = 0;
+        try
+        {
+            if (typeName == "sprite")
+            {
+                n = streamShardedToFile<SpriteType>(*cache, typeName, m, limit, pretty, f);
+            }
+            else
+            {
+                n = streamShardedToFile<ModelType>(*cache, typeName, m, limit, pretty, f);
+            }
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "Stream-dump failed: " << e.what() << "\n";
+            return 1;
+        }
+        std::cerr << "Streamed " << n << " " << typeName << " entries to " << outPath << "\n";
+        return 0;
     }
 
     json out;

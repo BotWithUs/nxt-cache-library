@@ -17,8 +17,10 @@ struct ServerConfig
 // the cache key + server version. Throws std::runtime_error on any failure.
 ServerConfig fetchServerConfig();
 
-// Beta variant — fetches https://world1.runescape.com/jav_config_beta.ws?binaryType=3.
-// Beta runs a different server_version + cache key so it must use its own jav_config.
+// Beta variant — fetches https://www.runescape.com/jav_config_beta.ws?binaryType=3,
+// the gameval/Lua beta that carries cache index 67 (build 947 on
+// content.beta.runescape.com). Beta runs a different server_version + cache key
+// and a different content host, all parsed from its own jav_config.
 ServerConfig fetchServerConfigBeta();
 
 }  // namespace js5
