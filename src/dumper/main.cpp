@@ -47,7 +47,7 @@ void usage(const char *prog)
         << "  --type <name>       npc | item | loc | seq | varbit | enum | struct |\n"
         << "                      inv | param | quest | underlay | overlay |\n"
         << "                      worldmap | dbrow | if | sprite | model | itemicon |\n"
-        << "                      gameval | locspawn\n"
+        << "                      gameval | locspawn | wmespawn\n"
         << "                      (sprite/model emit metadata only; pixel/geometry\n"
         << "                       bulk data is exposed via the C ABI. itemicon\n"
         << "                       renders an item's inventory icon to a BMP.\n"
@@ -498,8 +498,9 @@ int main(int argc, char **argv)
     // types, so they have no TypeMapping.
     const bool isItemIcon = (typeName == "itemicon");
     const bool isLocSpawn = (typeName == "locspawn");
+    const bool isWmeSpawn = (typeName == "wmespawn");
     TypeMapping m{};
-    if (!isItemIcon && !isLocSpawn)
+    if (!isItemIcon && !isLocSpawn && !isWmeSpawn)
     {
         auto it = kDefaults.find(typeName);
         if (it == kDefaults.end())
@@ -720,6 +721,85 @@ int main(int argc, char **argv)
         json envelope = {
             {"type", "locspawn"},
             {"index", kMapsIndex},
+            {"count", entries.size()},
+            {"entries", std::move(entries)},
+        };
+        std::string serialized = pretty ? envelope.dump(2) : envelope.dump();
+        if (outPath.empty())
+        {
+            std::cout << serialized << std::endl;
+        }
+        else
+        {
+            std::ofstream f(outPath, std::ios::binary);
+            if (!f)
+            {
+                std::cerr << "Failed to open output file: " << outPath << "\n";
+                return 1;
+            }
+            f << serialized;
+        }
+        return 0;
+    }
+
+    // World-map-element placements: cache index 41. Each archive file holds a u16
+    // count then count x { i32 packed, u16 wmeId, u8 flag }. The packed coord is
+    // plane=(p>>28)&3, x=(p>>14)&0x3FFF, y=p&0x3FFF. Emits every map-icon world
+    // position so a caller can resolve "where is X mineable/choppable/etc.".
+    if (isWmeSpawn)
+    {
+        constexpr int kWmeIndex = 41;
+        json entries = json::array();
+        try
+        {
+            std::vector<int> aids = cache->archiveIds(kWmeIndex);
+            for (int aid: aids)
+            {
+                auto &archive = cache->archive(kWmeIndex, aid);
+                if (archive.id == -1)
+                {
+                    continue;
+                }
+                for (auto &[fid, fh]: archive.files)
+                {
+                    auto buf = archive.readFile(fid);
+                    if (buf.buffer == nullptr || buf.remaining() < 2)
+                    {
+                        continue;
+                    }
+                    int count = buf.readUnsignedShort();
+                    for (int i = 0; i < count; i++)
+                    {
+                        if (buf.remaining() < 7)
+                        {
+                            break;
+                        }
+                        int packed = buf.readInt();
+                        int wme = buf.readUnsignedShort();
+                        buf.readUnsignedByte();
+                        if (packed == -1)
+                        {
+                            continue;
+                        }
+                        entries.push_back({
+                            {"wme", wme},
+                            {"x", (packed >> 14) & 0x3FFF},
+                            {"y", packed & 0x3FFF},
+                            {"plane", (packed >> 28) & 0x3},
+                        });
+                    }
+                }
+                cache->evictArchive(kWmeIndex, aid);
+            }
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "wmespawn scan failed: " << e.what() << "\n";
+            return 1;
+        }
+        json envelope = {
+            {"type", "wmespawn"},
+            {"index", kWmeIndex},
             {"count", entries.size()},
             {"entries", std::move(entries)},
         };

@@ -32,7 +32,7 @@ inline const std::map<std::string, TypeMapping> &typeDefaults()
         {"quest",    {"quest",     2, 35,  0}},
         {"underlay", {"underlay",  2,  1,  0}},
         {"overlay",  {"overlay",   2,  4,  0}},
-        {"worldmap", {"worldmap", 23,  0,  0}},
+        {"worldmap", {"worldmap",  2, 36,  0}},
         {"dbrow",    {"dbrow",     2, 41,  0}},
         // Models and sprites: one archive per id, single file (file 0). shift=0
         // makes the generic shard math resolve to archive=id, file=0. The modern
