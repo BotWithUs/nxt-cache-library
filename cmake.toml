@@ -29,9 +29,11 @@ endif()
 
 [options]
 NXTCACHE_BUILD_DUMPER = true
+NXTCACHE_BUILD_MIRROR = true
 
 [conditions]
 build-dumper = "NXTCACHE_BUILD_DUMPER"
+build-mirror = "NXTCACHE_BUILD_MIRROR"
 
 [vcpkg]
 version = "2025.06.13"
@@ -94,5 +96,18 @@ include-directories = ["src"]
 link-libraries = [
     "NXTCache",
     "nlohmann_json::nlohmann_json",
+]
+compile-features = ["cxx_std_20"]
+
+# Byte-faithful JS5 -> .jcache mirror. Links sqlite3 directly because it writes
+# the cache files itself (the library is only used for the JS5 network protocol).
+[target.nxtcache-mirror]
+condition = "build-mirror"
+type = "executable"
+sources = ["src/mirror/*.cpp"]
+include-directories = ["src"]
+link-libraries = [
+    "NXTCache",
+    "unofficial::sqlite3::sqlite3",
 ]
 compile-features = ["cxx_std_20"]

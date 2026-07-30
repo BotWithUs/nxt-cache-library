@@ -26,6 +26,7 @@ endif()
 
 # Options
 option(NXTCACHE_BUILD_DUMPER "" ON)
+option(NXTCACHE_BUILD_MIRROR "" ON)
 
 # vcpkg settings
 # Static deps (sqlite3, zlib, bzip2) get baked into NXTCache.dll so it ships as
@@ -111,6 +112,7 @@ set(NXTCache_SOURCES
 	cmake.toml
 	"src/c_api/nxtcache_c.cpp"
 	"src/c_api/nxtcache_c.h"
+	"src/config_types/GameVal.h"
 	"src/config_types/InterfaceTypes.cpp"
 	"src/config_types/InterfaceTypes.h"
 	"src/config_types/ModelType.cpp"
@@ -221,6 +223,37 @@ if(NXTCACHE_BUILD_DUMPER) # build-dumper
 	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
 	if(NOT CMKR_VS_STARTUP_PROJECT)
 		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT nxtcache-dumper)
+	endif()
+
+endif()
+# Target: nxtcache-mirror
+if(NXTCACHE_BUILD_MIRROR) # build-mirror
+	set(nxtcache-mirror_SOURCES
+		cmake.toml
+		"src/mirror/main.cpp"
+	)
+
+	add_executable(nxtcache-mirror)
+
+	target_sources(nxtcache-mirror PRIVATE ${nxtcache-mirror_SOURCES})
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${nxtcache-mirror_SOURCES})
+
+	target_compile_features(nxtcache-mirror PRIVATE
+		cxx_std_20
+	)
+
+	target_include_directories(nxtcache-mirror PRIVATE
+		src
+	)
+
+	target_link_libraries(nxtcache-mirror PRIVATE
+		NXTCache
+		unofficial::sqlite3::sqlite3
+	)
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT nxtcache-mirror)
 	endif()
 
 endif()
