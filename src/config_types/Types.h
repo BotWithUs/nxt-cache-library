@@ -86,6 +86,7 @@ public:
     int id;
 
     int modelID{};
+    std::vector<int> modelIds;
     int modelZoom{2000};
     int modelRotationX{};
     int modelRotationY{};
@@ -158,6 +159,13 @@ public:
     int inventoryCursors[5]{-1, -1, -1, -1, -1};
 
     int pickSizeShift{};
+
+    // 24-bit id that arrived with the extended-id opcodes. Observed only on the
+    // 55 "Furniture plans: ..." items, all pointing at item 61878 -- a nameless
+    // stackable item identical in shape to the noted template (799) but
+    // recoloured, so this reads as a template id in the noted-template family.
+    // Left under its opcode name until the role is confirmed.
+    int op182Value{-1};
 
     std::vector<std::string> componentOptions;
     std::vector<std::string> groundOptions;

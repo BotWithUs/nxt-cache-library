@@ -162,6 +162,19 @@ public:
         return readUnsignedShort();
     }
 
+    // Same 2-or-4 byte encoding as readSmartInt(), but the 2-byte sentinel
+    // 32767 means "absent" and decodes to -1.
+    int readBigSmart()
+    {
+        if (!canRead(1)) return 0;
+        if (buffer[readPosition] < 0)
+        {
+            return readInt() & 0x7FFFFFFF;
+        }
+        int value = readUnsignedShort();
+        return value == 32767 ? -1 : value;
+    }
+
     int readSmart()
     {
         if (!canRead(1)) return 0;

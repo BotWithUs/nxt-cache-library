@@ -695,6 +695,15 @@ void ItemType::decode(RSBuffer &buffer)
             if (modelOffsetY > 32767)
                 modelOffsetY -= 65536;
         }
+        else if (opcode == 9)
+        {
+            int count = buffer.readUnsignedByte();
+            modelIds.assign(count, 0);
+            for (int i = 0; i < count; ++i)
+            {
+                modelIds[i] = buffer.readBigSmart();
+            }
+        }
         else if (opcode == 11)
         {
             isStackable = true;
@@ -789,6 +798,15 @@ void ItemType::decode(RSBuffer &buffer)
         else if (opcode == 44 || opcode == 45)
         {
             buffer.skip(2);
+        }
+        else if (opcode >= 46 && opcode <= 56)
+        {
+            // Additional model ids for slots 1-11; slot 0 is the base modelID from opcode 1.
+            if (modelIds.size() < 12)
+            {
+                modelIds.resize(12, -1);
+            }
+            modelIds[opcode - 45] = buffer.readBigSmart();
         }
         else if (opcode == 65)
         {
@@ -969,6 +987,49 @@ void ItemType::decode(RSBuffer &buffer)
         {
             shopPrice = buffer.readLong();
         }
+        else if (opcode == 182)
+        {
+            op182Value = buffer.readMediumInt();
+        }
+        else if (opcode >= 190 && opcode <= 199)
+        {
+            // 24-bit id variant of opcodes 100-109, for stack link ids above 65535.
+            int stackId = buffer.readMediumInt();
+            int stackAmount = buffer.readUnsignedShort();
+            stackIDs[opcode - 190] = std::make_pair(stackId, stackAmount);
+        }
+        else if (opcode == 201)
+        {
+            notedID = buffer.readMediumInt();
+        }
+        else if (opcode == 202)
+        {
+            templateID = buffer.readMediumInt();
+        }
+        else if (opcode == 203)
+        {
+            lentItemId = buffer.readMediumInt();
+        }
+        else if (opcode == 204)
+        {
+            lendTemplate = buffer.readMediumInt();
+        }
+        else if (opcode == 205)
+        {
+            bindId = buffer.readMediumInt();
+        }
+        else if (opcode == 206)
+        {
+            boundTemplate = buffer.readMediumInt();
+        }
+        else if (opcode == 207)
+        {
+            shardItemId = buffer.readMediumInt();
+        }
+        else if (opcode == 208)
+        {
+            shardTemplateId = buffer.readMediumInt();
+        }
         else if (opcode == 242)
         {
             buffer.readSmartInt();
@@ -1051,6 +1112,18 @@ void InventoryType::decode(RSBuffer &buffer)
             for (size_t i = 0; i < size; i++)
             {
                 stackIds[i] = buffer.readUnsignedShort();
+                stackAmounts[i] = buffer.readUnsignedShort();
+            }
+        }
+        else if (opcode == 21)
+        {
+            // 24-bit id variant of opcode 4, for stock item ids above 65535.
+            size_t size = buffer.readUnsignedByte();
+            stackIds.resize(size);
+            stackAmounts.resize(size);
+            for (size_t i = 0; i < size; i++)
+            {
+                stackIds[i] = buffer.readMediumInt();
                 stackAmounts[i] = buffer.readUnsignedShort();
             }
         }
