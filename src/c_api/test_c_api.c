@@ -170,6 +170,69 @@ static int check_list_ids(nxt_cache *c, const char *type, int want_id)
     return fails;
 }
 
+/* nxt_get_mapsquare_clip_and_crossings must publish exactly what the two
+   single-result entries publish for the same square: same clip words, same
+   plane mask, same crossing records. Drives the production entry points rather
+   than re-deriving either answer here. Returns failure count. */
+static int check_mapsquare_combined(nxt_cache *c, int sx, int sy)
+{
+    uint32_t *clip_a = NULL, *clip_b = NULL;
+    nxt_crossing *cross_a = NULL, *cross_b = NULL;
+    size_t words_a = 0, words_b = 0, cross_na = 0, cross_nb = 0;
+    uint8_t mask_a = 0, mask_b = 0;
+    int fails = 0;
+
+    nxt_result rc_a = nxt_get_mapsquare_clip(c, sx, sy, &clip_a, &words_a, &mask_a);
+    nxt_result rc_x = nxt_get_mapsquare_crossings(c, sx, sy, &cross_a, &cross_na);
+    nxt_result rc_b = nxt_get_mapsquare_clip_and_crossings(c, sx, sy, &clip_b, &words_b,
+                                                           &mask_b, &cross_b, &cross_nb);
+    if (rc_a != rc_b || rc_x != rc_b)
+    {
+        fprintf(stderr, "FAIL mapsquare (%d,%d): rc clip=%d crossings=%d combined=%d\n",
+                sx, sy, rc_a, rc_x, rc_b);
+        fails++;
+    }
+    if (rc_b == NXT_OK)
+    {
+        if (words_a != words_b || mask_a != mask_b
+            || memcmp(clip_a, clip_b, words_b * sizeof(uint32_t)) != 0)
+        {
+            fprintf(stderr, "FAIL mapsquare (%d,%d): clip differs (words %zu/%zu mask %u/%u)\n",
+                    sx, sy, words_a, words_b, mask_a, mask_b);
+            fails++;
+        }
+        if (cross_na != cross_nb
+            || (cross_nb != 0 && memcmp(cross_a, cross_b, cross_nb * sizeof(nxt_crossing)) != 0))
+        {
+            fprintf(stderr, "FAIL mapsquare (%d,%d): crossings differ (%zu/%zu)\n",
+                    sx, sy, cross_na, cross_nb);
+            fails++;
+        }
+        printf("  mapsquare (%d,%d)  %zu words mask=%u  %zu crossings  %s\n",
+               sx, sy, words_b, mask_b, cross_nb, fails == 0 ? "OK" : "FAIL");
+    }
+    else
+    {
+        printf("  mapsquare (%d,%d)  rc=%d (all three agree)\n", sx, sy, rc_b);
+    }
+    nxt_free(clip_a);
+    nxt_free(clip_b);
+    nxt_free(cross_a);
+    nxt_free(cross_b);
+    return fails;
+}
+
+/* A null out-parameter must be rejected before anything is decoded. */
+static int check_mapsquare_combined_invalid(nxt_cache *c)
+{
+    uint32_t *clip = NULL;
+    size_t words = 0, count = 0;
+    nxt_result rc = nxt_get_mapsquare_clip_and_crossings(c, 50, 50, &clip, &words,
+                                                         NULL, NULL, &count);
+    printf("  mapsquare combined null-out rc=%d (expected %d)\n", rc, NXT_ERR_INVALID);
+    return rc == NXT_ERR_INVALID ? 0 : 1;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2)
@@ -253,6 +316,13 @@ int main(int argc, char **argv)
     rc = nxt_list_type_ids(c, "nope", &bogus, &bogus_n);
     printf("  list nope rc=%d (expected %d)\n", rc, NXT_ERR_INVALID);
     if (rc != NXT_ERR_INVALID) failures++;
+
+    /* Map decode: the combined clip+crossings entry against the two it replaces.
+       (50,50) is Lumbridge, (37,63) Varrock, (0,0) an absent square. */
+    failures += check_mapsquare_combined(c, 50, 50);
+    failures += check_mapsquare_combined(c, 37, 63);
+    failures += check_mapsquare_combined(c, 0, 0);
+    failures += check_mapsquare_combined_invalid(c);
 
     nxt_cache_close(c);
     printf("%d failures\n", failures);

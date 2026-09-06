@@ -186,6 +186,23 @@ typedef struct nxt_crossing
 NXT_API nxt_result nxt_get_mapsquare_crossings(nxt_cache *cache, int square_x, int square_y,
                                                nxt_crossing **out_crossings, size_t *out_count);
 
+/* Decode one map square's clip grid AND its interactable crossings in a single
+   pass. Both nxt_get_mapsquare_clip and nxt_get_mapsquare_crossings run the
+   whole landscape decode internally, so a consumer that wants both (a
+   navigation baker does) pays for that decode twice; this entry runs it once
+   and publishes both results. Output and error conventions are exactly those of
+   the two single-result entries: *out_clip is a freshly allocated packed
+   [4][64][64] uint32 array (*out_clip_count == 4*64*64), *out_crossings is a
+   freshly allocated array of *out_crossing_count records (NULL / 0 for a square
+   with none), both freed with nxt_free, out_plane_mask is optional, and an
+   absent square yields NXT_ERR_NOT_FOUND. On any failure no buffer is published
+   and the caller has nothing to free. */
+NXT_API nxt_result nxt_get_mapsquare_clip_and_crossings(nxt_cache *cache, int square_x, int square_y,
+                                                       uint32_t **out_clip, size_t *out_clip_count,
+                                                       uint8_t *out_plane_mask,
+                                                       nxt_crossing **out_crossings,
+                                                       size_t *out_crossing_count);
+
 /* ---- Config-type getters (single-entry JSON) ---------------------------
  *
  * Each function returns a NUL-terminated UTF-8 JSON document describing one

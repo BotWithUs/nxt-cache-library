@@ -727,6 +727,78 @@ nxt_result nxt_get_mapsquare_crossings(nxt_cache *handle, int square_x, int squa
     }
 }
 
+nxt_result nxt_get_mapsquare_clip_and_crossings(nxt_cache *handle, int square_x, int square_y,
+                                                uint32_t **out_clip, size_t *out_clip_count,
+                                                uint8_t *out_plane_mask,
+                                                nxt_crossing **out_crossings,
+                                                size_t *out_crossing_count)
+{
+    if (!handle || !out_clip || !out_clip_count || !out_crossings || !out_crossing_count)
+    {
+        setError("invalid argument: null handle or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    *out_crossings = nullptr;
+    *out_crossing_count = 0;
+    auto *c = reinterpret_cast<Cache *>(handle);
+    try
+    {
+        if (!c->mapDefs)
+        {
+            c->mapDefs = std::make_unique<maps::DefCache>();
+        }
+        maps::MapSquareClip clip;
+        std::vector<maps::Crossing> crossings;
+        // One decode, both products: buildMapSquareClip already fills the
+        // crossing sink alongside the clip grid when one is supplied.
+        if (!maps::buildMapSquareClip(*c->source, square_x, square_y, *c->mapDefs, clip, &crossings))
+        {
+            setError("map square " + std::to_string(square_x) + "," + std::to_string(square_y)
+                     + " not present");
+            return NXT_ERR_NOT_FOUND;
+        }
+        const size_t words = static_cast<size_t>(maps::MapSquareClip::PLANES)
+                             * maps::MapSquareClip::SIZE * maps::MapSquareClip::SIZE;
+        auto *clipBuf = static_cast<uint32_t *>(std::malloc(words * sizeof(uint32_t)));
+        if (!clipBuf)
+        {
+            setError("malloc failed");
+            return NXT_ERR_INTERNAL;
+        }
+        nxt_crossing *crossingBuf = nullptr;
+        if (!crossings.empty())
+        {
+            crossingBuf =
+                static_cast<nxt_crossing *>(std::malloc(crossings.size() * sizeof(nxt_crossing)));
+            if (!crossingBuf)
+            {
+                // Publish neither buffer: the caller frees only what a
+                // successful call handed it, so a half-published pair would
+                // leak the clip grid on every failure path.
+                std::free(clipBuf);
+                setError("malloc failed");
+                return NXT_ERR_INTERNAL;
+            }
+            std::memcpy(crossingBuf, crossings.data(), crossings.size() * sizeof(nxt_crossing));
+        }
+        std::memcpy(clipBuf, clip.flags, words * sizeof(uint32_t));
+        *out_clip = clipBuf;
+        *out_clip_count = words;
+        if (out_plane_mask)
+        {
+            *out_plane_mask = clip.planeMask;
+        }
+        *out_crossings = crossingBuf;
+        *out_crossing_count = crossings.size();
+        return NXT_OK;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("get_mapsquare_clip_and_crossings failed: ") + e.what());
+        return NXT_ERR_DECODE;
+    }
+}
+
 #define NXT_GETTER(suffix, T) \
     nxt_result nxt_get_##suffix##_json(nxt_cache *h, int id, char **out, size_t *len) \
     { return getJsonGeneric<T>(h, #suffix, id, out, len); }
