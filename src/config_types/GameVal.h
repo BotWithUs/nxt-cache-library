@@ -12,7 +12,7 @@
 // scriptable type (loc, npc, obj, component, var_player, ...). Each index-67
 // archive is one type's whole table, stored as a single file (id 0). The table
 // is decoded here; the archive-id -> type-name map is fixed (a GameValGroupType
-// ordinal, NOT a name hash). Full format notes: docs/gameval-index67.md.
+// ordinal, NOT a name hash).
 namespace nxt {
 
 constexpr int kGameValIndex = 67;

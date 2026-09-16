@@ -11,3 +11,8 @@
 *.swp
 .DS_Store
 Thumbs.db
+
+# Rendered output. These are derived from Jagex-owned game assets - keep them
+# local, never commit them to this repository.
+/rendered_icons/
+*.bmp

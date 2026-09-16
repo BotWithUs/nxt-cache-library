@@ -113,7 +113,7 @@ NXT_API nxt_result nxt_list_archive_ids(nxt_cache *cache, int index_id,
  * index-67 archive is one type's whole table; the type name maps to a fixed
  * archive id (see config_types/GameVal.h). Names are stored UPPERCASE. These
  * require an index-67-bearing cache — open with nxt_cache_open_live_beta() or a
- * local/openrs2 beta cache. Full format: docs/gameval-index67.md.
+ * local/openrs2 beta cache.
  */
 
 /* One group's table as JSON: { "type", "archive", "count", "entries": { id:name } }.

@@ -12,7 +12,8 @@ namespace maps {
 
 // Directional clip flags packed per tile. The low bits mirror the RS clip model
 // (one bit per wall edge plus whole-tile object/floor/blocked); the high bits are
-// project-specific markers WorldWalker consumes when assembling transitions.
+// project-specific markers a pathfinding consumer can use when assembling
+// traversal transitions.
 //
 // Wall edges are stored on the tile they belong to AND reflected onto the
 // adjacent tile (e.g. a west wall on T also sets WALL_E on T's west neighbour),
@@ -53,7 +54,7 @@ enum class CrossingKind : uint8_t
 };
 
 // One interactable scenery crossing emitted alongside the clip grid. Carries the
-// loc id + geometry WorldWalker needs to bake a Transition the executor can click;
+// loc id + geometry a consumer needs to bake a clickable traversal transition;
 // the bare CLIP_* bits cannot name the loc. Layout is a fixed 16-byte POD so the C
 // ABI's nxt_crossing aliases it byte-for-byte (memcpy across the boundary).
 struct Crossing
@@ -132,7 +133,7 @@ bool buildMapSquareClip(CacheSource &source, int squareX, int squareY,
 // an empty vector when the square is absent or has no location file. This is a
 // standalone read path: it does NOT resolve loc defs, terrain, collision, or
 // bridges — it exists for offline tools that need to find where a loc id is
-// placed in the world, independent of the WorldWalker clip path.
+// placed in the world, independent of the clip path above.
 std::vector<LocSpawn> buildMapSquareLocs(CacheSource &source, int squareX, int squareY);
 
 }  // namespace maps
