@@ -13,9 +13,12 @@
 #include <windows.h>
 #else
 #include <cerrno>
+#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 #endif
 
@@ -86,6 +89,201 @@ void ensureWsaStartup()
 #endif
 }
 
+#ifdef _WIN32
+using SockLen = int;
+#else
+using SockLen = socklen_t;
+#endif
+
+bool isTimeoutError(int error)
+{
+#ifdef _WIN32
+    return error == WSAETIMEDOUT;
+#else
+    return error == EAGAIN || error == EWOULDBLOCK;
+#endif
+}
+
+void setBlocking(SOCKET s, bool isBlocking)
+{
+#ifdef _WIN32
+    u_long mode = isBlocking ? 0 : 1;
+    const bool isOk = ioctlsocket(s, FIONBIO, &mode) == 0;
+#else
+    const int flags = fcntl(s, F_GETFL, 0);
+    const bool isOk = flags >= 0 &&
+                      fcntl(s, F_SETFL, isBlocking ? (flags & ~O_NONBLOCK) : (flags | O_NONBLOCK)) == 0;
+#endif
+    if (!isOk)
+    {
+        throw std::runtime_error("JS5 socket mode change failed: WSA " + std::to_string(WSAGetLastError()));
+    }
+}
+
+enum class ConnectResult
+{
+    Connected,
+    Failed,
+    TimedOut,
+};
+
+// Wait until a non-blocking connect completes, fails, or timeoutMs elapses.
+// Windows reports a failed connect in the except set; POSIX via POLLOUT plus
+// SO_ERROR. poll() on POSIX avoids select()'s FD_SETSIZE limit in fd-heavy hosts
+// (a JVM); select() on Windows because WSAPoll misreports failed connects on
+// older builds.
+ConnectResult waitForConnect(SOCKET s, int timeoutMs)
+{
+#ifdef _WIN32
+    fd_set writable;
+    fd_set failed;
+    FD_ZERO(&writable);
+    FD_ZERO(&failed);
+    FD_SET(s, &writable);
+    FD_SET(s, &failed);
+    timeval tv{timeoutMs / 1000, (timeoutMs % 1000) * 1000};
+    const int ready = select(0, nullptr, &writable, &failed, &tv);
+#else
+    pollfd pfd{s, POLLOUT, 0};
+    const int ready = poll(&pfd, 1, timeoutMs);
+#endif
+    if (ready == 0)
+    {
+        return ConnectResult::TimedOut;
+    }
+    if (ready < 0)
+    {
+        return ConnectResult::Failed;
+    }
+    int soError = 0;
+    SockLen len = sizeof(soError);
+    if (getsockopt(s, SOL_SOCKET, SO_ERROR, reinterpret_cast<char *>(&soError), &len) != 0 || soError != 0)
+    {
+        return ConnectResult::Failed;
+    }
+    return ConnectResult::Connected;
+}
+
+// connect() bounded by timeoutMs (<= 0 means the OS default, unbounded here).
+// Leaves the socket in blocking mode on success.
+ConnectResult connectWithTimeout(SOCKET s, const sockaddr *addr, int addrLen, int timeoutMs)
+{
+    if (timeoutMs <= 0)
+    {
+        return connect(s, addr, addrLen) == 0 ? ConnectResult::Connected : ConnectResult::Failed;
+    }
+    setBlocking(s, false);
+    if (connect(s, addr, addrLen) != 0)
+    {
+        const int error = WSAGetLastError();
+#ifdef _WIN32
+        const bool isPending = error == WSAEWOULDBLOCK;
+#else
+        const bool isPending = error == EINPROGRESS;
+#endif
+        if (!isPending)
+        {
+            return ConnectResult::Failed;
+        }
+        const ConnectResult waited = waitForConnect(s, timeoutMs);
+        if (waited != ConnectResult::Connected)
+        {
+            return waited;
+        }
+    }
+    setBlocking(s, true);
+    return ConnectResult::Connected;
+}
+
+// Per-call recv/send timeout (<= 0 leaves the OS default: block forever).
+void setIoTimeout(SOCKET s, int timeoutMs)
+{
+    if (timeoutMs <= 0)
+    {
+        return;
+    }
+#ifdef _WIN32
+    const DWORD value = static_cast<DWORD>(timeoutMs);
+#else
+    const timeval value{timeoutMs / 1000, (timeoutMs % 1000) * 1000};
+#endif
+    const auto *raw = reinterpret_cast<const char *>(&value);
+    if (setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, raw, sizeof(value)) != 0 ||
+        setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, raw, sizeof(value)) != 0)
+    {
+        throw std::runtime_error("JS5 setsockopt timeout failed: WSA " + std::to_string(WSAGetLastError()));
+    }
+}
+
+// Resolve and connect to the configured endpoint, trying each address. Returns
+// a connected, blocking socket with I/O timeouts set, or throws. Never leaks a
+// socket on the failure paths.
+SOCKET openConnection(const ServerConfig &config)
+{
+    addrinfo hints{};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+
+    addrinfo *result = nullptr;
+    const std::string portStr = std::to_string(config.port);
+    if (getaddrinfo(config.endpoint.c_str(), portStr.c_str(), &hints, &result) != 0 || !result)
+    {
+        throw std::runtime_error("getaddrinfo failed for " + config.endpoint);
+    }
+
+    SOCKET s = INVALID_SOCKET;
+    bool hasTimedOut = false;
+    for (addrinfo *p = result; p; p = p->ai_next)
+    {
+        s = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+        if (s == INVALID_SOCKET)
+        {
+            continue;
+        }
+        ConnectResult outcome = ConnectResult::Failed;
+        try
+        {
+            outcome = connectWithTimeout(s, p->ai_addr, static_cast<int>(p->ai_addrlen),
+                                         config.connectTimeoutMs);
+        }
+        catch (...)
+        {
+            closesocket(s);
+            freeaddrinfo(result);
+            throw;
+        }
+        if (outcome == ConnectResult::Connected)
+        {
+            break;
+        }
+        hasTimedOut = hasTimedOut || outcome == ConnectResult::TimedOut;
+        closesocket(s);
+        s = INVALID_SOCKET;
+    }
+    freeaddrinfo(result);
+    if (s == INVALID_SOCKET)
+    {
+        const std::string target = config.endpoint + ":" + portStr;
+        if (hasTimedOut)
+        {
+            throw std::runtime_error("JS5 connect to " + target + " timed out after " +
+                                     std::to_string(config.connectTimeoutMs) + " ms");
+        }
+        throw std::runtime_error("connect failed to " + target);
+    }
+    try
+    {
+        setIoTimeout(s, config.ioTimeoutMs);
+    }
+    catch (...)
+    {
+        closesocket(s);
+        throw;
+    }
+    return s;
+}
+
 }  // namespace
 
 Js5Socket::Js5Socket(const ServerConfig &config)
@@ -97,50 +295,45 @@ Js5Socket::Js5Socket(const ServerConfig &config)
 
 Js5Socket::~Js5Socket()
 {
+    disconnect();
+}
+
+void Js5Socket::disconnect()
+{
     SOCKET s = static_cast<SOCKET>(socket_);
     if (s != INVALID_SOCKET)
     {
         shutdown(s, SD_BOTH);
         closesocket(s);
     }
+    socket_ = static_cast<uintptr_t>(INVALID_SOCKET);
+    connected_ = false;
 }
 
 void Js5Socket::connectAndHandshake()
 {
-    addrinfo hints{};
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP;
-
-    addrinfo *result = nullptr;
-    std::string portStr = std::to_string(config_.port);
-    if (getaddrinfo(config_.endpoint.c_str(), portStr.c_str(), &hints, &result) != 0 || !result)
-    {
-        throw std::runtime_error("getaddrinfo failed for " + config_.endpoint);
-    }
-
-    SOCKET s = INVALID_SOCKET;
-    for (addrinfo *p = result; p; p = p->ai_next)
-    {
-        s = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
-        if (s == INVALID_SOCKET) continue;
-        if (connect(s, p->ai_addr, static_cast<int>(p->ai_addrlen)) == 0) break;
-        closesocket(s);
-        s = INVALID_SOCKET;
-    }
-    freeaddrinfo(result);
-    if (s == INVALID_SOCKET)
-    {
-        throw std::runtime_error("connect failed to " + config_.endpoint + ":" + portStr);
-    }
-    socket_ = static_cast<uintptr_t>(s);
-
-    // Handshake 1: type=15, length=42, version1, version2, key (32 bytes + null), lang=0
     if (config_.key.size() != 32)
     {
         throw std::runtime_error("server key must be exactly 32 chars, got " +
                                  std::to_string(config_.key.size()));
     }
+    disconnect();
+    socket_ = static_cast<uintptr_t>(openConnection(config_));
+    try
+    {
+        handshake();
+    }
+    catch (...)
+    {
+        disconnect();
+        throw;
+    }
+    connected_ = true;
+}
+
+void Js5Socket::handshake()
+{
+    // Handshake 1: type=15, length=42, version1, version2, key (32 bytes + null), lang=0
     uint8_t hs1[44];
     hs1[0] = 15;
     hs1[1] = 42;
@@ -173,8 +366,6 @@ void Js5Socket::connectAndHandshake()
     };
     writeHs2(6);
     writeHs2(3);
-
-    connected_ = true;
 }
 
 void Js5Socket::readBytes(uint8_t *dst, size_t n)
@@ -186,7 +377,16 @@ void Js5Socket::readBytes(uint8_t *dst, size_t n)
         int r = recv(s, reinterpret_cast<char *>(dst + got),
                      static_cast<int>(n - got), 0);
         if (r == 0) throw std::runtime_error("JS5 socket closed by peer");
-        if (r < 0)  throw std::runtime_error("JS5 recv failed: WSA " + std::to_string(WSAGetLastError()));
+        if (r < 0)
+        {
+            const int error = WSAGetLastError();
+            if (isTimeoutError(error))
+            {
+                throw std::runtime_error("JS5 recv timed out after " +
+                                         std::to_string(config_.ioTimeoutMs) + " ms with no data");
+            }
+            throw std::runtime_error("JS5 recv failed: WSA " + std::to_string(error));
+        }
         got += static_cast<size_t>(r);
     }
 }
@@ -199,14 +399,42 @@ void Js5Socket::writeBytes(const uint8_t *src, size_t n)
     {
         int r = send(s, reinterpret_cast<const char *>(src + sent),
                      static_cast<int>(n - sent), kSendFlags);
-        if (r <= 0) throw std::runtime_error("JS5 send failed: WSA " + std::to_string(WSAGetLastError()));
+        if (r <= 0)
+        {
+            const int error = WSAGetLastError();
+            if (r < 0 && isTimeoutError(error))
+            {
+                throw std::runtime_error("JS5 send timed out after " +
+                                         std::to_string(config_.ioTimeoutMs) + " ms");
+            }
+            throw std::runtime_error("JS5 send failed: WSA " + std::to_string(error));
+        }
         sent += static_cast<size_t>(r);
     }
 }
 
 std::vector<uint8_t> Js5Socket::getFile(int major, int minor)
 {
-    if (!connected_) throw std::runtime_error("JS5 socket not connected");
+    if (!connected_)
+    {
+        // An earlier failure closed the connection; start a fresh one.
+        connectAndHandshake();
+    }
+    try
+    {
+        return fetchFile(major, minor);
+    }
+    catch (...)
+    {
+        // The stream position is unknown after any failure mid-request, so the
+        // connection cannot be reused. The next call reconnects.
+        disconnect();
+        throw;
+    }
+}
+
+std::vector<uint8_t> Js5Socket::fetchFile(int major, int minor)
+{
 
     // File request: mode, major, minor (u32be), version (u16be), short2 (u16be)
     uint8_t req[10];

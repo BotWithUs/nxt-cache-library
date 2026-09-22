@@ -27,6 +27,7 @@ endif()
 # Options
 option(NXTCACHE_BUILD_DUMPER "" ON)
 option(NXTCACHE_BUILD_MIRROR "" ON)
+option(NXTCACHE_BUILD_TESTS "" ON)
 
 # vcpkg settings
 # Static deps (sqlite3, zlib, bzip2) get baked into NXTCache.dll so it ships as
@@ -255,5 +256,79 @@ if(NXTCACHE_BUILD_MIRROR) # build-mirror
 	if(NOT CMKR_VS_STARTUP_PROJECT)
 		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT nxtcache-mirror)
 	endif()
+
+endif()
+# Target: nxtcache-js5-timeout-test
+if(NXTCACHE_BUILD_TESTS) # build-tests
+	set(nxtcache-js5-timeout-test_SOURCES
+		cmake.toml
+		"src/tests/test_js5_timeout.cpp"
+	)
+
+	add_executable(nxtcache-js5-timeout-test)
+
+	target_sources(nxtcache-js5-timeout-test PRIVATE ${nxtcache-js5-timeout-test_SOURCES})
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${nxtcache-js5-timeout-test_SOURCES})
+
+	target_compile_features(nxtcache-js5-timeout-test PRIVATE
+		cxx_std_20
+	)
+
+	target_include_directories(nxtcache-js5-timeout-test PRIVATE
+		src
+	)
+
+	target_link_libraries(nxtcache-js5-timeout-test PRIVATE
+		NXTCache
+	)
+
+	if(WIN32) # windows
+		target_link_libraries(nxtcache-js5-timeout-test PRIVATE
+			ws2_32
+		)
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT nxtcache-js5-timeout-test)
+	endif()
+
+	set(CMKR_TARGET nxtcache-js5-timeout-test)
+	enable_testing()
+	add_test(NAME js5_timeout COMMAND nxtcache-js5-timeout-test)
+
+endif()
+# Target: nxtcache-svt-init-test
+if(NXTCACHE_BUILD_TESTS) # build-tests
+	set(nxtcache-svt-init-test_SOURCES
+		cmake.toml
+		"src/tests/test_scriptvartype_init.cpp"
+	)
+
+	add_executable(nxtcache-svt-init-test)
+
+	target_sources(nxtcache-svt-init-test PRIVATE ${nxtcache-svt-init-test_SOURCES})
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${nxtcache-svt-init-test_SOURCES})
+
+	target_compile_features(nxtcache-svt-init-test PRIVATE
+		cxx_std_20
+	)
+
+	target_include_directories(nxtcache-svt-init-test PRIVATE
+		src
+	)
+
+	target_link_libraries(nxtcache-svt-init-test PRIVATE
+		NXTCache
+	)
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT nxtcache-svt-init-test)
+	endif()
+
+	set(CMKR_TARGET nxtcache-svt-init-test)
+	enable_testing()
+	add_test(NAME scriptvartype_init COMMAND nxtcache-svt-init-test)
 
 endif()

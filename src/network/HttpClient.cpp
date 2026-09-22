@@ -1,4 +1,5 @@
 #include "network/HttpClient.h"
+#include "network/Js5Config.h"
 
 #include <curl/curl.h>
 
@@ -73,6 +74,13 @@ std::string httpGet(const std::string &host, const std::string &path, bool useTl
     curl_easy_setopt(curl.handle, CURLOPT_WRITEDATA, &body);
     curl_easy_setopt(curl.handle, CURLOPT_USERAGENT, "NXTCacheLibrary/0.1");
     curl_easy_setopt(curl.handle, CURLOPT_FOLLOWLOCATION, 1L);
+    // Bound the jav_config fetch like the JS5 socket: connect, and a stall
+    // (below 1 byte/s for the io window). NOSIGNAL keeps curl's timeout
+    // handling off SIGALRM, which is unsafe in multithreaded hosts.
+    curl_easy_setopt(curl.handle, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl.handle, CURLOPT_CONNECTTIMEOUT_MS, static_cast<long>(kDefaultConnectTimeoutMs));
+    curl_easy_setopt(curl.handle, CURLOPT_LOW_SPEED_LIMIT, 1L);
+    curl_easy_setopt(curl.handle, CURLOPT_LOW_SPEED_TIME, static_cast<long>(kDefaultIoTimeoutMs / 1000));
 
     CURLcode rc = curl_easy_perform(curl.handle);
     if (rc != CURLE_OK)
