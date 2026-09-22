@@ -79,7 +79,9 @@ void expectVarp(nxt_cache *cache, int id, int typeId, int baseType, int rule, in
     nxt_varp_info v{};
     const nxt_result rc = info(cache, id, v);
     const std::string tag = "varp " + std::to_string(id);
-    check(rc == NXT_OK, tag + " info rc=" + std::to_string(rc) + " " + nxt_last_error());
+    // nxt_last_error() is only meaningful after a failure; on OK it is stale.
+    check(rc == NXT_OK, tag + " info rc=" + std::to_string(rc) +
+                            (rc == NXT_OK ? std::string() : std::string(" ") + nxt_last_error()));
     if (rc != NXT_OK)
     {
         return;
@@ -157,6 +159,27 @@ struct Sweep
     int firstLong = -1;
 };
 
+// ScriptVarType defaults, restated here independently of the library table:
+// INT, BOOLEAN, STRING (value field 0, text ""), LONG, TELEMETRY_INTERVAL and
+// WORLD_AREA default to 0; COORDFINE has none; every other type defaults to -1.
+constexpr int kTypeCoordFine = 50;
+
+int64_t expectedTypeDefault(int typeId)
+{
+    switch (typeId)
+    {
+        case kTypeInt:
+        case kTypeBoolean:
+        case kTypeString:
+        case kTypeLong:
+        case 126:
+        case 127:
+            return 0;
+        default:
+            return -1;
+    }
+}
+
 // Re-derive the client rule from the raw fields and compare it with the
 // library's answer, independently of how the library computes it.
 bool ruleHolds(const nxt_varp_info &v)
@@ -165,7 +188,11 @@ bool ruleHolds(const nxt_varp_info &v)
     {
         return v.default_rule == NXT_VARP_DEFAULT_DOMAIN && v.default_value == -1;
     }
-    return v.default_rule == NXT_VARP_DEFAULT_TYPE;
+    if (v.type_id == kTypeCoordFine)
+    {
+        return v.default_rule == NXT_VARP_DEFAULT_NONE && v.default_value == 0;
+    }
+    return v.default_rule == NXT_VARP_DEFAULT_TYPE && v.default_value == expectedTypeDefault(v.type_id);
 }
 
 Sweep sweepAll(nxt_cache *cache)

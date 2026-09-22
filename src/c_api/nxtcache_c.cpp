@@ -400,11 +400,7 @@ nxt_varp_info toVarpInfo(const VarPlayerType &type)
     return info;
 }
 
-static_assert(sizeof(nxt_varp_info) == 40, "nxt_varp_info is a fixed 40-byte ABI");
-static_assert(offsetof(nxt_varp_info, type_id) == 12, "nxt_varp_info layout drifted");
-static_assert(offsetof(nxt_varp_info, default_value) == 24, "nxt_varp_info layout drifted");
-static_assert(offsetof(nxt_varp_info, op7_absent) == 32, "nxt_varp_info layout drifted");
-static_assert(offsetof(nxt_varp_info, op110) == 38, "nxt_varp_info layout drifted");
+// nxt_varp_info layout pins live in nxtcache_c.h (NXT_VARP_LAYOUT_ASSERT).
 
 }  // namespace
 

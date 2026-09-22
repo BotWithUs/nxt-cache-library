@@ -404,18 +404,19 @@ NXT_API nxt_result nxt_list_type_ids(nxt_cache *cache, const char *type_name,
  * Threading: NOT safe to call concurrently on one nxt_cache*, like every other
  * entry in this header. The first call loads and memoises group 60 inside the
  * handle, and the handle's containers are unsynchronised. Serialise per handle.
- * Separately, two different handles must not make their first ScriptVarType
- * lookup at the same time: the library-global type table is lazily initialised
- * without a lock (a known issue, not yet fixed).
+ * Different handles may be used from different threads. The library-global
+ * ScriptVarType table is initialised exactly once, thread-safely.
  *
  * Latency: once group 60 has loaded, a call is an in-memory lookup and never
  * touches the network. The load happens on the first call per handle. On a
  * local cache it is one sqlite read. With live fallback enabled and group 60
  * missing locally, or on a nxt_cache_open_live* handle, that first call blocks
- * on one JS5 group fetch over the handle's socket. The library sets no socket
- * timeout, so a stalled connection blocks with NO bound until the peer closes
- * or the OS gives up on the TCP connection. A failed load is not memoised: it
- * returns NXT_ERR_IO, and the next call tries the fetch again.
+ * on one JS5 group fetch over the handle's socket. That fetch is bounded: the
+ * connect times out after 10 s, and any single socket read or write that
+ * makes no progress times out after 30 s (js5::ServerConfig defaults). A
+ * timeout returns NXT_ERR_IO. The limits bound a stall, not a slow transfer
+ * that keeps delivering bytes. A failed load is not memoised: the next call
+ * reconnects and tries the fetch again, paying up to the timeout again.
  *
  * LONG varps: 764 of the 13378 varps in the current cache have a LONG base type
  * (for example ScriptVarType 110 LONG, 71 HASH64, 35, 49 CLANHASH, 118
@@ -475,6 +476,32 @@ typedef struct nxt_varp_info
     uint8_t  op5;           /* [37] opcode 5 raw byte (VarType+0x49), 0 if absent. */
     uint16_t op110;         /* [38] opcode 110 raw u16 (VarType+0x4C), 0 if absent. */
 } nxt_varp_info;
+
+/* Layout pins, checked in every C11 / C++ translation unit that includes this
+   header, binders' shims included. Older C modes skip them. */
+#if defined(__cplusplus)
+  #define NXT_VARP_LAYOUT_ASSERT(cond, msg) static_assert(cond, msg)
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+  #define NXT_VARP_LAYOUT_ASSERT(cond, msg) _Static_assert(cond, msg)
+#else
+  #define NXT_VARP_LAYOUT_ASSERT(cond, msg)
+#endif
+NXT_VARP_LAYOUT_ASSERT(sizeof(nxt_varp_info) == 40, "nxt_varp_info is a fixed 40-byte ABI");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, struct_size) == 0, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, version) == 4, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, id) == 8, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, type_id) == 12, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, base_type) == 16, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, default_rule) == 20, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, default_value) == 24, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, op7_absent) == 32, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, op8_present) == 33, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, has_op4) == 34, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, op4) == 35, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, has_op5) == 36, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, op5) == 37, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, op110) == 38, "nxt_varp_info layout drifted");
+#undef NXT_VARP_LAYOUT_ASSERT
 
 /* Presence check only; decodes nothing. *out_exists receives 1 or 0 on NXT_OK
    and is left untouched on any error. */
