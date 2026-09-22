@@ -45,7 +45,6 @@ public:
 
 private:
     static std::unordered_map<int, const ScriptVarType *> scriptVarTypes;
-    static bool initialized;
-
     static void init();
+    static void ensureInitialized();
 };

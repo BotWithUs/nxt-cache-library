@@ -30,10 +30,12 @@ endif()
 [options]
 NXTCACHE_BUILD_DUMPER = true
 NXTCACHE_BUILD_MIRROR = true
+NXTCACHE_BUILD_TESTS = true
 
 [conditions]
 build-dumper = "NXTCACHE_BUILD_DUMPER"
 build-mirror = "NXTCACHE_BUILD_MIRROR"
+build-tests = "NXTCACHE_BUILD_TESTS"
 
 [vcpkg]
 version = "2025.06.13"
@@ -111,3 +113,30 @@ link-libraries = [
     "unofficial::sqlite3::sqlite3",
 ]
 compile-features = ["cxx_std_20"]
+
+# JS5 socket timeout tests against local fake servers (no network, no cache).
+[target.nxtcache-js5-timeout-test]
+condition = "build-tests"
+type = "executable"
+sources = ["src/tests/test_js5_timeout.cpp"]
+include-directories = ["src"]
+link-libraries = ["NXTCache"]
+windows.link-libraries = ["ws2_32"]
+compile-features = ["cxx_std_20"]
+cmake-after = """
+enable_testing()
+add_test(NAME js5_timeout COMMAND nxtcache-js5-timeout-test)
+"""
+
+# ScriptVarType first-use race test (its own process: it must be the first use).
+[target.nxtcache-svt-init-test]
+condition = "build-tests"
+type = "executable"
+sources = ["src/tests/test_scriptvartype_init.cpp"]
+include-directories = ["src"]
+link-libraries = ["NXTCache"]
+compile-features = ["cxx_std_20"]
+cmake-after = """
+enable_testing()
+add_test(NAME scriptvartype_init COMMAND nxtcache-svt-init-test)
+"""

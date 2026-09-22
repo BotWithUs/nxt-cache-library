@@ -1,13 +1,10 @@
 #include "config_types/ScriptVarType.h"
 
 std::unordered_map<int, const ScriptVarType *> ScriptVarType::scriptVarTypes;
-bool ScriptVarType::initialized = false;
 
+// Populates scriptVarTypes. Called exactly once, through ensureInitialized().
 void ScriptVarType::init()
 {
-    if (initialized)
-        return;
-
     static const ScriptVarType INT(0, "INT", 'i', BaseVarType::INTEGER, 0);
     scriptVarTypes[INT.getId()] = &INT;
 
@@ -443,14 +440,25 @@ void ScriptVarType::init()
 
     static const ScriptVarType VAR_TYPE(209, "VAR_TYPE", '7', BaseVarType::INTEGER, -1);
     scriptVarTypes[VAR_TYPE.getId()] = &VAR_TYPE;
+}
 
-    initialized = true;
+// Thread-safe one-time init: a function-local static is initialised exactly
+// once even when several threads arrive together (C++11 [stmt.dcl]/4), and the
+// others block until it finishes. This replaces an unguarded bool flag that let
+// two first callers populate the map concurrently.
+void ScriptVarType::ensureInitialized()
+{
+    static const bool isInitialized = []()
+    {
+        init();
+        return true;
+    }();
+    (void)isInitialized;
 }
 
 ScriptVarType *ScriptVarType::getScriptVarTypeById(int id)
 {
-    if (!initialized)
-        init();
+    ensureInitialized();
     auto it = scriptVarTypes.find(id);
     if (it == scriptVarTypes.end())
     {
@@ -461,8 +469,7 @@ ScriptVarType *ScriptVarType::getScriptVarTypeById(int id)
 
 ScriptVarType *ScriptVarType::getByChar(char32_t c)
 {
-    if (!initialized)
-        init();
+    ensureInitialized();
     for (const auto &kv: scriptVarTypes)
     {
         if (kv.second->c == c)
