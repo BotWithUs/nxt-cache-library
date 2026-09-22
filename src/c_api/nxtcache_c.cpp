@@ -7,6 +7,7 @@
 #include "config_types/ModelType.h"
 #include "config_types/SpriteType.h"
 #include "config_types/Types.h"
+#include "config_types/VarPlayerType.h"
 #include "core/Archive.h"
 #include "core/CacheSource.h"
 #include "core/DbRowProvider.h"
@@ -24,6 +25,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
@@ -281,6 +283,124 @@ json buildGameValGroup(CacheSource &cs, int archiveId)
         {"entries", std::move(e)},
     };
 }
+
+enum class VarpLookup
+{
+    Found,
+    NotFound,
+    IoError,
+    DecodeError,
+};
+
+// Resolve one varp against config group 60. Distinguishes "group unreadable"
+// (IoError: nothing is known about the id) from "id not in the group's file
+// table" (NotFound) and "present but malformed" (DecodeError). Membership is
+// checked on fileIds BEFORE readFile, because Archive::readFile inserts a
+// default FileHeader for an unknown id. outType may be null (presence only).
+VarpLookup lookupVarp(CacheSource &cs, int id, VarPlayerType *outType, std::string &outError)
+{
+    const nxt::TypeMapping &m = nxt::typeDefaults().at("varp");
+    Archive &archive = cs.archive(m.indexId, m.archiveId);
+    if (archive.id == -1 || !archive.loaded)
+    {
+        outError = "varp group (index " + std::to_string(m.indexId) + ", group " +
+                   std::to_string(m.archiveId) + ") could not be read";
+        return VarpLookup::IoError;
+    }
+    if (id < 0 || archive.fileIds.find(id) == archive.fileIds.end())
+    {
+        outError = "varp " + std::to_string(id) + " does not exist";
+        return VarpLookup::NotFound;
+    }
+    if (outType == nullptr)
+    {
+        return VarpLookup::Found;
+    }
+    RSBuffer buffer = archive.readFile(id);
+    VarPlayerType type{};
+    type.id = id;
+    const auto *bytes = reinterpret_cast<const uint8_t *>(buffer.buffer);
+    if (bytes == nullptr || !type.decodeStrict(bytes + buffer.readPosition, buffer.remaining()))
+    {
+        outError = "varp " + std::to_string(id) + " exists but failed to decode";
+        return VarpLookup::DecodeError;
+    }
+    *outType = type;
+    return VarpLookup::Found;
+}
+
+nxt_result varpLookupResult(VarpLookup lookup)
+{
+    switch (lookup)
+    {
+        case VarpLookup::Found:
+            return NXT_OK;
+        case VarpLookup::NotFound:
+            return NXT_ERR_NOT_FOUND;
+        case VarpLookup::IoError:
+            return NXT_ERR_IO;
+        case VarpLookup::DecodeError:
+            return NXT_ERR_DECODE;
+    }
+    return NXT_ERR_INTERNAL;
+}
+
+int32_t varpBaseType(const VarpDefault &def)
+{
+    if (!def.hasBaseType)
+    {
+        return NXT_VAR_BASE_UNKNOWN;
+    }
+    switch (def.baseType)
+    {
+        case BaseVarType::INTEGER:
+            return NXT_VAR_BASE_INTEGER;
+        case BaseVarType::LONG:
+            return NXT_VAR_BASE_LONG;
+        case BaseVarType::STRING:
+            return NXT_VAR_BASE_STRING;
+        case BaseVarType::COORDFINE:
+            return NXT_VAR_BASE_COORDFINE;
+    }
+    return NXT_VAR_BASE_UNKNOWN;
+}
+
+int32_t varpDefaultRule(VarpDefaultRule rule)
+{
+    switch (rule)
+    {
+        case VarpDefaultRule::None:
+            return NXT_VARP_DEFAULT_NONE;
+        case VarpDefaultRule::Type:
+            return NXT_VARP_DEFAULT_TYPE;
+        case VarpDefaultRule::Domain:
+            return NXT_VARP_DEFAULT_DOMAIN;
+    }
+    return NXT_VARP_DEFAULT_NONE;
+}
+
+nxt_varp_info toVarpInfo(const VarPlayerType &type)
+{
+    const VarpDefault def = type.resolveDefault();
+    nxt_varp_info info{};
+    info.struct_size = static_cast<uint32_t>(sizeof(nxt_varp_info));
+    info.version = NXT_VARP_INFO_VERSION;
+    info.id = type.id;
+    info.type_id = type.typeId;
+    info.base_type = varpBaseType(def);
+    info.default_rule = varpDefaultRule(def.rule);
+    info.default_value = def.value;
+    info.op7_absent = type.flagOp7 ? 1 : 0;
+    info.op8_present = type.flagOp8 ? 1 : 0;
+    info.has_op4 = type.hasOp4 ? 1 : 0;
+    info.op4 = type.op4;
+    info.has_op5 = type.hasOp5 ? 1 : 0;
+    info.op5 = type.op5;
+    info.op110 = type.op110;
+    return info;
+}
+
+// nxt_varp_info layout pins live in nxtcache_c.h (NXT_VARP_LAYOUT_ASSERT).
 
 }  // namespace
 
@@ -1332,6 +1452,7 @@ nxt_result nxt_get_json(nxt_cache *handle, const char *type_name, int id,
     if (t == "loc")      return nxt_get_loc_json(handle, id, out_json, out_len);
     if (t == "seq")      return nxt_get_seq_json(handle, id, out_json, out_len);
     if (t == "varbit")   return nxt_get_varbit_json(handle, id, out_json, out_len);
+    if (t == "varp")     return nxt_get_varp_json(handle, id, out_json, out_len);
     if (t == "enum")     return nxt_get_enum_json(handle, id, out_json, out_len);
     if (t == "struct")   return nxt_get_struct_json(handle, id, out_json, out_len);
     if (t == "inv")      return nxt_get_inv_json(handle, id, out_json, out_len);
@@ -1374,6 +1495,7 @@ nxt_result nxt_dump_all_json(nxt_cache *handle, const char *type_name, int limit
         else if (t == "loc")      arr = dumpAll<LocationType>(*c->source, it->second, limit_or_neg1);
         else if (t == "seq")      arr = dumpAll<SequenceType>(*c->source, it->second, limit_or_neg1);
         else if (t == "varbit")   arr = dumpAll<VarbitType>(*c->source, it->second, limit_or_neg1);
+        else if (t == "varp")     arr = dumpAll<VarPlayerType>(*c->source, it->second, limit_or_neg1);
         else if (t == "enum")     arr = dumpAll<EnumType>(*c->source, it->second, limit_or_neg1);
         else if (t == "struct")   arr = dumpAll<StructType>(*c->source, it->second, limit_or_neg1);
         else if (t == "inv")      arr = dumpAll<InventoryType>(*c->source, it->second, limit_or_neg1);
@@ -1487,6 +1609,103 @@ nxt_result nxt_list_type_ids(nxt_cache *handle, const char *type_name,
     catch (const std::exception &e)
     {
         setError(std::string("list_type_ids failed: ") + e.what());
+        return NXT_ERR_IO;
+    }
+}
+
+nxt_result nxt_varp_exists(nxt_cache *handle, int id, int32_t *out_exists)
+{
+    if (!handle || !out_exists)
+    {
+        setError("invalid argument: null handle or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    auto *c = reinterpret_cast<Cache *>(handle);
+    try
+    {
+        std::string error;
+        const VarpLookup lookup = lookupVarp(*c->source, id, nullptr, error);
+        if (lookup == VarpLookup::Found || lookup == VarpLookup::NotFound)
+        {
+            *out_exists = lookup == VarpLookup::Found ? 1 : 0;
+            return NXT_OK;
+        }
+        setError(error);
+        return varpLookupResult(lookup);
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("varp_exists failed: ") + e.what());
+        return NXT_ERR_IO;
+    }
+}
+
+nxt_result nxt_get_varp_info(nxt_cache *handle, int id, nxt_varp_info *io_info)
+{
+    if (!handle || !io_info)
+    {
+        setError("invalid argument: null handle or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    if (io_info->struct_size < sizeof(nxt_varp_info))
+    {
+        setError("nxt_varp_info.struct_size " + std::to_string(io_info->struct_size) +
+                 " is smaller than " + std::to_string(sizeof(nxt_varp_info)));
+        return NXT_ERR_INVALID;
+    }
+    auto *c = reinterpret_cast<Cache *>(handle);
+    try
+    {
+        std::string error;
+        VarPlayerType type{};
+        const VarpLookup lookup = lookupVarp(*c->source, id, &type, error);
+        if (lookup != VarpLookup::Found)
+        {
+            setError(error);
+            return varpLookupResult(lookup);
+        }
+        *io_info = toVarpInfo(type);
+        return NXT_OK;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("get_varp_info failed: ") + e.what());
+        return NXT_ERR_IO;
+    }
+}
+
+nxt_result nxt_get_varp_json(nxt_cache *handle, int id, char **out_json, size_t *out_len)
+{
+    if (!handle || !out_json || !out_len)
+    {
+        setError("invalid argument: null handle or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    auto *c = reinterpret_cast<Cache *>(handle);
+    try
+    {
+        std::string error;
+        VarPlayerType type{};
+        const VarpLookup lookup = lookupVarp(*c->source, id, &type, error);
+        if (lookup != VarpLookup::Found)
+        {
+            setError(error);
+            return varpLookupResult(lookup);
+        }
+        const std::string text = nxtdump::toJson(type).dump();
+        char *buf = dupString(text);
+        if (!buf)
+        {
+            setError("malloc failed");
+            return NXT_ERR_INTERNAL;
+        }
+        *out_json = buf;
+        *out_len = text.size();
+        return NXT_OK;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("get_varp_json failed: ") + e.what());
         return NXT_ERR_IO;
     }
 }

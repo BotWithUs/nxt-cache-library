@@ -344,7 +344,7 @@ NXT_API nxt_result nxt_render_item_icon(nxt_cache *cache, int id,
 
 /* Generic dispatch — useful for languages with reflection. Same return
    contract as the per-type getters. type_name is one of: "npc", "item",
-   "loc", "seq", "varbit", "enum", "struct", "inv", "param", "quest",
+   "loc", "seq", "varbit", "varp", "enum", "struct", "inv", "param", "quest",
    "underlay", "overlay", "worldmap", "dbrow", "sprite", "model". */
 NXT_API nxt_result nxt_get_json(nxt_cache *cache, const char *type_name, int id,
                                 char **out_json, size_t *out_len);
@@ -363,11 +363,161 @@ NXT_API nxt_result nxt_dump_all_json(nxt_cache *cache, const char *type_name,
    is still non-NULL and must be freed).
 
    type_name is any name nxt_get_json accepts ("npc", "item", "loc", "seq",
-   "varbit", "enum", "struct", "inv", "param", "quest", "underlay", "overlay",
+   "varbit", "varp", "enum", "struct", "inv", "param", "quest", "underlay", "overlay",
    "worldmap", "dbrow", "model", "sprite", "if"). For "if" each id is an
    interface (archive) id. Returns NXT_ERR_INVALID for an unknown type_name. */
 NXT_API nxt_result nxt_list_type_ids(nxt_cache *cache, const char *type_name,
                                      int **out_ids, size_t *out_count);
+
+/* ---- Player variables (varps) -------------------------------------------
+ *
+ * Varp definitions live in JS5 index 2 (config), group 60 (VAR_PLAYER), one
+ * file per varp id. The client keeps a varp in its PlayerVarDomain hashmap
+ * only once the server has set it; until then a read yields the DEFAULT below.
+ * So these entries let a host tell "no such varp" (NXT_ERR_NOT_FOUND) apart
+ * from "valid varp, not yet set by the server" (NXT_OK with the default).
+ *
+ * Exists: a varp EXISTS when its id is a file in config group 60's file table,
+ * read from an archive that loaded successfully. This is presence, not
+ * decodability: a present entry that fails to decode still exists, but
+ * nxt_get_varp_info then returns NXT_ERR_DECODE, never NXT_ERR_NOT_FOUND.
+ *
+ * Return codes, for both entries below:
+ *   NXT_OK            the answer is valid.
+ *   NXT_ERR_NOT_FOUND nxt_get_varp_info only: the varp does not exist
+ *                     (negative ids included). nxt_varp_exists reports absence
+ *                     as NXT_OK with *out_exists == 0 instead.
+ *   NXT_ERR_IO        group 60 could not be read (missing from the reference
+ *                     table, blob unreadable, network failure). Nothing is known
+ *                     about the id. Never treat this as "no such varp".
+ *   NXT_ERR_DECODE    nxt_get_varp_info only: the entry exists but its bytes are
+ *                     malformed.
+ *   NXT_ERR_INVALID   null handle or out-pointer, or io_info->struct_size is
+ *                     smaller than sizeof(nxt_varp_info).
+ *   NXT_ERR_INTERNAL  allocation failure (nxt_get_varp_json only). An exception
+ *                     thrown while reading the cache is reported as NXT_ERR_IO.
+ * nxt_last_error() carries a message for every non-OK code.
+ *
+ * Both are new in this revision. An older NXTCache.dll lacks them, so a binder
+ * resolves them as optional symbols (GetProcAddress / SymbolLookup.find).
+ *
+ * Threading: NOT safe to call concurrently on one nxt_cache*, like every other
+ * entry in this header. The first call loads and memoises group 60 inside the
+ * handle, and the handle's containers are unsynchronised. Serialise per handle.
+ * Different handles may be used from different threads. The library-global
+ * ScriptVarType table is initialised exactly once, thread-safely.
+ *
+ * Latency: once group 60 has loaded, a call is an in-memory lookup and never
+ * touches the network. The load happens on the first call per handle. On a
+ * local cache it is one sqlite read. With live fallback enabled and group 60
+ * missing locally, or on a nxt_cache_open_live* handle, that first call blocks
+ * on one JS5 group fetch over the handle's socket. That fetch is bounded: the
+ * connect times out after 10 s, and any single socket read or write that
+ * makes no progress times out after 30 s (js5::ServerConfig defaults). A
+ * timeout returns NXT_ERR_IO. The limits bound a stall, not a slow transfer
+ * that keeps delivering bytes. A failed load is not memoised: the next call
+ * reconnects and tries the fetch again, paying up to the timeout again.
+ *
+ * LONG varps: 764 of the 13378 varps in the current cache have a LONG base type
+ * (for example ScriptVarType 110 LONG, 71 HASH64, 35, 49 CLANHASH, 118
+ * PLAYER_GROUP). The client stores their values as 64-bit, so a 32-bit read of
+ * such a varp's LIVE value can truncate. That concerns the agent's read path,
+ * not this library. Their DEFAULTS always fit int32: 0 for type 110 and -1 for
+ * the other LONG types. Every default_value in the current cache is 0 or -1.
+ */
+
+/* nxt_varp_info.base_type: the ScriptVarType's storage type. */
+#define NXT_VAR_BASE_UNKNOWN   (-1)  /* opcode 3 absent, or type id not in the table */
+#define NXT_VAR_BASE_INTEGER   0
+#define NXT_VAR_BASE_LONG      1
+#define NXT_VAR_BASE_STRING    2
+#define NXT_VAR_BASE_COORDFINE 3
+
+/* nxt_varp_info.default_rule: which branch of the client's rule produced the default. */
+#define NXT_VARP_DEFAULT_NONE   0  /* unknown type: no default can be computed */
+#define NXT_VARP_DEFAULT_TYPE   1  /* the ScriptVarType's default */
+#define NXT_VARP_DEFAULT_DOMAIN 2  /* the player domain's default, -1 (BOOLEAN, opcode 7 absent) */
+
+#define NXT_VARP_INFO_VERSION 1
+
+/* Fixed-size POD, 40 bytes, no implicit padding. Offsets in brackets.
+ *
+ * The client's default rule (rs2client 950-1, VarDomainType__GetDefaultVarValue,
+ * RVA 0x32B5B0, as used by the player domain), reproduced exactly:
+ *   if (op7_absent && type_id == 1 (BOOLEAN)) default = -1  (DEFAULT_DOMAIN)
+ *   else                                    default = the ScriptVarType's default
+ * Type defaults: INT 0, BOOLEAN 0, LONG (110) 0, STRING "" and most other
+ * types -1. They come from the library's ScriptVarType table.
+ *
+ * Type semantics: opcode 3 carries a ScriptVarType ID (INT = 0, BOOLEAN = 1,
+ * STRING = 36, ...), not a legacy type char. The raw op4 / op5 / op110 / op8
+ * fields are exactly what the client stores. Their meaning is not established.
+ */
+typedef struct nxt_varp_info
+{
+    uint32_t struct_size;   /* [0]  IN: caller sets sizeof(nxt_varp_info).
+                                    OUT: bytes the library filled. */
+    uint32_t version;       /* [4]  OUT: NXT_VARP_INFO_VERSION. */
+    int32_t  id;            /* [8]  the varp id queried. */
+    int32_t  type_id;       /* [12] ScriptVarType id from opcode 3; -1 if absent. */
+    int32_t  base_type;     /* [16] NXT_VAR_BASE_*. */
+    int32_t  default_rule;  /* [20] NXT_VARP_DEFAULT_*. */
+    int64_t  default_value; /* [24] The client default. INTEGER base: the int value,
+                                    sign-extended. LONG base: the 64-bit value.
+                                    STRING base: 0, and the default is the empty
+                                    string "" (the only STRING type, id 36).
+                                    COORDFINE / UNKNOWN: 0 with DEFAULT_NONE. */
+    uint8_t  op7_absent;    /* [32] 1 when opcode 7 is ABSENT. This is the client flag
+                                    VarType+0x50: initialised to 1, opcode 7 clears it. */
+    uint8_t  op8_present;   /* [33] 1 when opcode 8 is present (client VarType+0x51). */
+    uint8_t  has_op4;       /* [34] 1 iff opcode 4 is present. */
+    uint8_t  op4;           /* [35] opcode 4 raw byte (VarType+0x48), 0 if absent. */
+    uint8_t  has_op5;       /* [36] 1 iff opcode 5 is present. */
+    uint8_t  op5;           /* [37] opcode 5 raw byte (VarType+0x49), 0 if absent. */
+    uint16_t op110;         /* [38] opcode 110 raw u16 (VarType+0x4C), 0 if absent. */
+} nxt_varp_info;
+
+/* Layout pins, checked in every C11 / C++ translation unit that includes this
+   header, binders' shims included. Older C modes skip them. */
+#if defined(__cplusplus)
+  #define NXT_VARP_LAYOUT_ASSERT(cond, msg) static_assert(cond, msg)
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+  #define NXT_VARP_LAYOUT_ASSERT(cond, msg) _Static_assert(cond, msg)
+#else
+  #define NXT_VARP_LAYOUT_ASSERT(cond, msg)
+#endif
+NXT_VARP_LAYOUT_ASSERT(sizeof(nxt_varp_info) == 40, "nxt_varp_info is a fixed 40-byte ABI");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, struct_size) == 0, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, version) == 4, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, id) == 8, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, type_id) == 12, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, base_type) == 16, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, default_rule) == 20, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, default_value) == 24, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, op7_absent) == 32, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, op8_present) == 33, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, has_op4) == 34, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, op4) == 35, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, has_op5) == 36, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, op5) == 37, "nxt_varp_info layout drifted");
+NXT_VARP_LAYOUT_ASSERT(offsetof(nxt_varp_info, op110) == 38, "nxt_varp_info layout drifted");
+#undef NXT_VARP_LAYOUT_ASSERT
+
+/* Presence check only; decodes nothing. *out_exists receives 1 or 0 on NXT_OK
+   and is left untouched on any error. */
+NXT_API nxt_result nxt_varp_exists(nxt_cache *cache, int id, int32_t *out_exists);
+
+/* Decode one varp definition into *io_info. The caller owns the struct and
+   sets io_info->struct_size = sizeof(nxt_varp_info) first. The library writes
+   the struct only on NXT_OK. On any error it is untouched, apart from
+   struct_size itself, which is left as passed. */
+NXT_API nxt_result nxt_get_varp_info(nxt_cache *cache, int id, nxt_varp_info *io_info);
+
+/* The same decode as JSON (the nxtcache-dumper "varp" shape). Also reachable
+   via nxt_get_json(cache, "varp", ...), and every varp id is listed by
+   nxt_list_type_ids(cache, "varp", ...). Free *out_json with nxt_free.
+   NXT_ERR_NOT_FOUND means the varp does not exist. */
+NXT_API nxt_result nxt_get_varp_json(nxt_cache *cache, int id, char **out_json, size_t *out_len);
 
 #ifdef __cplusplus
 }  /* extern "C" */

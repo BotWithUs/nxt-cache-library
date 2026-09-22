@@ -25,6 +25,7 @@ inline const std::map<std::string, TypeMapping> &typeDefaults()
         {"loc",      {"loc",      16, -1,  8}},
         {"seq",      {"seq",      20, -1,  7}},
         {"varbit",   {"varbit",    2, 69,  0}},
+        {"varp",     {"varp",      2, 60,  0}},   // VAR_PLAYER; see VarPlayerType.h
         {"enum",     {"enum",     17, -1,  8}},
         {"struct",   {"struct",   22, -1,  5}},
         {"inv",      {"inv",       2,  5,  0}},

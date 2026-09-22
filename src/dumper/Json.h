@@ -4,6 +4,7 @@
 #include "config_types/ModelType.h"
 #include "config_types/SpriteType.h"
 #include "config_types/Types.h"
+#include "config_types/VarPlayerType.h"
 
 #include <nlohmann/json.hpp>
 
@@ -52,6 +53,46 @@ inline json toJson(const VarbitType &t)
         {"msb", t.msb},
         {"lsb", t.lsb},
     };
+}
+
+inline json toJson(const VarPlayerType &t)
+{
+    json j = {
+        {"id", t.id},
+        {"typeId", t.typeId},
+        {"flagOp7", t.flagOp7},
+        {"flagOp8", t.flagOp8},
+    };
+    if (const ScriptVarType *svt = t.scriptVarType())
+    {
+        j["typeName"] = svt->getName();
+    }
+    if (t.hasOp4)
+    {
+        j["op4"] = t.op4;
+    }
+    if (t.hasOp5)
+    {
+        j["op5"] = t.op5;
+    }
+    if (t.hasOp110)
+    {
+        j["op110"] = t.op110;
+    }
+    const VarpDefault def = t.resolveDefault();
+    if (def.rule != VarpDefaultRule::None)
+    {
+        j["defaultRule"] = def.rule == VarpDefaultRule::Domain ? "domain" : "type";
+        if (def.text != nullptr)
+        {
+            j["default"] = *def.text;
+        }
+        else
+        {
+            j["default"] = def.value;
+        }
+    }
+    return j;
 }
 
 inline json toJson(const NpcType &t)
