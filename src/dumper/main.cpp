@@ -44,7 +44,7 @@ void usage(const char *prog)
         << "Usage: " << prog << " --type <name> [--cache <path> | --source live] [options]\n"
         << "\n"
         << "Required:\n"
-        << "  --type <name>       npc | item | loc | seq | varbit | enum | struct |\n"
+        << "  --type <name>       npc | item | loc | seq | varbit | varp | enum | struct |\n"
         << "                      inv | param | quest | underlay | overlay |\n"
         << "                      worldmap | dbrow | if | sprite | model | itemicon |\n"
         << "                      gameval | locspawn | wmespawn\n"
@@ -1043,6 +1043,7 @@ int main(int argc, char **argv)
         else if (typeName == "loc")      out = dumpRange<LocationType>(*cache, m, id, limit);
         else if (typeName == "seq")      out = dumpRange<SequenceType>(*cache, m, id, limit);
         else if (typeName == "varbit")   out = dumpRange<VarbitType>(*cache, m, id, limit);
+        else if (typeName == "varp")     out = dumpRange<VarPlayerType>(*cache, m, id, limit);
         else if (typeName == "enum")     out = dumpRange<EnumType>(*cache, m, id, limit);
         else if (typeName == "struct")   out = dumpRange<StructType>(*cache, m, id, limit);
         else if (typeName == "inv")      out = dumpRange<InventoryType>(*cache, m, id, limit);

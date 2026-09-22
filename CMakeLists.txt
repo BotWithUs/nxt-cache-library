@@ -124,6 +124,8 @@ set(NXTCache_SOURCES
 	"src/config_types/SpriteType.h"
 	"src/config_types/Types.cpp"
 	"src/config_types/Types.h"
+	"src/config_types/VarPlayerType.cpp"
+	"src/config_types/VarPlayerType.h"
 	"src/core/Archive.cpp"
 	"src/core/Archive.h"
 	"src/core/CacheSource.h"
@@ -330,5 +332,41 @@ if(NXTCACHE_BUILD_TESTS) # build-tests
 	set(CMKR_TARGET nxtcache-svt-init-test)
 	enable_testing()
 	add_test(NAME scriptvartype_init COMMAND nxtcache-svt-init-test)
+
+endif()
+# Target: nxtcache-varp-test
+if(NXTCACHE_BUILD_TESTS) # build-tests
+	set(nxtcache-varp-test_SOURCES
+		cmake.toml
+		"src/tests/test_varp.cpp"
+	)
+
+	add_executable(nxtcache-varp-test)
+
+	target_sources(nxtcache-varp-test PRIVATE ${nxtcache-varp-test_SOURCES})
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${nxtcache-varp-test_SOURCES})
+
+	target_compile_features(nxtcache-varp-test PRIVATE
+		cxx_std_20
+	)
+
+	target_include_directories(nxtcache-varp-test PRIVATE
+		src
+	)
+
+	target_link_libraries(nxtcache-varp-test PRIVATE
+		NXTCache
+		nlohmann_json::nlohmann_json
+	)
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT nxtcache-varp-test)
+	endif()
+
+	set(CMKR_TARGET nxtcache-varp-test)
+	enable_testing()
+	add_test(NAME varp COMMAND nxtcache-varp-test)
+	set_tests_properties(varp PROPERTIES SKIP_RETURN_CODE 77)
 
 endif()
