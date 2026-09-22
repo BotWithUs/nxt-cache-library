@@ -390,8 +390,8 @@ nxt_varp_info toVarpInfo(const VarPlayerType &type)
     info.base_type = varpBaseType(def);
     info.default_rule = varpDefaultRule(def.rule);
     info.default_value = def.value;
-    info.flag_op7 = type.flagOp7 ? 1 : 0;
-    info.flag_op8 = type.flagOp8 ? 1 : 0;
+    info.op7_absent = type.flagOp7 ? 1 : 0;
+    info.op8_present = type.flagOp8 ? 1 : 0;
     info.has_op4 = type.hasOp4 ? 1 : 0;
     info.op4 = type.op4;
     info.has_op5 = type.hasOp5 ? 1 : 0;
@@ -403,7 +403,7 @@ nxt_varp_info toVarpInfo(const VarPlayerType &type)
 static_assert(sizeof(nxt_varp_info) == 40, "nxt_varp_info is a fixed 40-byte ABI");
 static_assert(offsetof(nxt_varp_info, type_id) == 12, "nxt_varp_info layout drifted");
 static_assert(offsetof(nxt_varp_info, default_value) == 24, "nxt_varp_info layout drifted");
-static_assert(offsetof(nxt_varp_info, flag_op7) == 32, "nxt_varp_info layout drifted");
+static_assert(offsetof(nxt_varp_info, op7_absent) == 32, "nxt_varp_info layout drifted");
 static_assert(offsetof(nxt_varp_info, op110) == 38, "nxt_varp_info layout drifted");
 
 }  // namespace

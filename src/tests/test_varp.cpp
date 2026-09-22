@@ -16,6 +16,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -149,6 +150,8 @@ struct Sweep
     int unknownBase = 0;
     int decodeFailures = 0;
     int ruleMismatches = 0;
+    int defaultsOutsideInt32 = 0;
+    int longBase = 0;
     int firstBoolean = -1;
     int firstString = -1;
     int firstLong = -1;
@@ -158,7 +161,7 @@ struct Sweep
 // library's answer, independently of how the library computes it.
 bool ruleHolds(const nxt_varp_info &v)
 {
-    if (v.flag_op7 != 0 && v.type_id == kTypeBoolean)
+    if (v.op7_absent != 0 && v.type_id == kTypeBoolean)
     {
         return v.default_rule == NXT_VARP_DEFAULT_DOMAIN && v.default_value == -1;
     }
@@ -187,7 +190,9 @@ Sweep sweepAll(nxt_cache *cache)
         s.typeCounts[v.type_id]++;
         s.unknownBase += v.base_type == NXT_VAR_BASE_UNKNOWN ? 1 : 0;
         s.ruleMismatches += ruleHolds(v) ? 0 : 1;
-        if (v.type_id == kTypeBoolean && v.flag_op7 != 0)
+        s.longBase += v.base_type == NXT_VAR_BASE_LONG ? 1 : 0;
+        s.defaultsOutsideInt32 += (v.default_value < INT32_MIN || v.default_value > INT32_MAX) ? 1 : 0;
+        if (v.type_id == kTypeBoolean && v.op7_absent != 0)
         {
             s.booleanWithoutOp7++;
         }
@@ -217,6 +222,9 @@ Sweep testSweep(nxt_cache *cache)
     check(s.decodeFailures == 0, "every listed varp decodes (failures=" + std::to_string(s.decodeFailures) + ")");
     check(s.unknownBase == 0, "every type id is in the ScriptVarType table (unknown=" +
                                   std::to_string(s.unknownBase) + ")");
+    std::printf("  LONG-based varps: %d\n", s.longBase);
+    check(s.defaultsOutsideInt32 == 0, "every default_value fits int32, LONG types included (outside=" +
+                                           std::to_string(s.defaultsOutsideInt32) + ")");
     check(s.ruleMismatches == 0, "client default rule holds for every varp (mismatches=" +
                                      std::to_string(s.ruleMismatches) + ")");
     check(s.typeCounts[kTypeInt] > s.typeCounts[kTypeBoolean], "INT is the dominant type");

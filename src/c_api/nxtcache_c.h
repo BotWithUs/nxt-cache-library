@@ -400,6 +400,29 @@ NXT_API nxt_result nxt_list_type_ids(nxt_cache *cache, const char *type_name,
  *
  * Both are new in this revision. An older NXTCache.dll lacks them, so a binder
  * resolves them as optional symbols (GetProcAddress / SymbolLookup.find).
+ *
+ * Threading: NOT safe to call concurrently on one nxt_cache*, like every other
+ * entry in this header. The first call loads and memoises group 60 inside the
+ * handle, and the handle's containers are unsynchronised. Serialise per handle.
+ * Separately, two different handles must not make their first ScriptVarType
+ * lookup at the same time: the library-global type table is lazily initialised
+ * without a lock (a known issue, not yet fixed).
+ *
+ * Latency: once group 60 has loaded, a call is an in-memory lookup and never
+ * touches the network. The load happens on the first call per handle. On a
+ * local cache it is one sqlite read. With live fallback enabled and group 60
+ * missing locally, or on a nxt_cache_open_live* handle, that first call blocks
+ * on one JS5 group fetch over the handle's socket. The library sets no socket
+ * timeout, so a stalled connection blocks with NO bound until the peer closes
+ * or the OS gives up on the TCP connection. A failed load is not memoised: it
+ * returns NXT_ERR_IO, and the next call tries the fetch again.
+ *
+ * LONG varps: 764 of the 13378 varps in the current cache have a LONG base type
+ * (for example ScriptVarType 110 LONG, 71 HASH64, 35, 49 CLANHASH, 118
+ * PLAYER_GROUP). The client stores their values as 64-bit, so a 32-bit read of
+ * such a varp's LIVE value can truncate. That concerns the agent's read path,
+ * not this library. Their DEFAULTS always fit int32: 0 for type 110 and -1 for
+ * the other LONG types. Every default_value in the current cache is 0 or -1.
  */
 
 /* nxt_varp_info.base_type: the ScriptVarType's storage type. */
@@ -420,7 +443,7 @@ NXT_API nxt_result nxt_list_type_ids(nxt_cache *cache, const char *type_name,
  *
  * The client's default rule (rs2client 950-1, VarDomainType__GetDefaultVarValue,
  * RVA 0x32B5B0, as used by the player domain), reproduced exactly:
- *   if (flag_op7 && type_id == 1 (BOOLEAN)) default = -1   (DEFAULT_DOMAIN)
+ *   if (op7_absent && type_id == 1 (BOOLEAN)) default = -1  (DEFAULT_DOMAIN)
  *   else                                    default = the ScriptVarType's default
  * Type defaults: INT 0, BOOLEAN 0, LONG (110) 0, STRING "" and most other
  * types -1. They come from the library's ScriptVarType table.
@@ -443,8 +466,9 @@ typedef struct nxt_varp_info
                                     STRING base: 0, and the default is the empty
                                     string "" (the only STRING type, id 36).
                                     COORDFINE / UNKNOWN: 0 with DEFAULT_NONE. */
-    uint8_t  flag_op7;      /* [32] 1 unless opcode 7 is present (client VarType+0x50). */
-    uint8_t  flag_op8;      /* [33] 1 iff opcode 8 is present (client VarType+0x51). */
+    uint8_t  op7_absent;    /* [32] 1 when opcode 7 is ABSENT. This is the client flag
+                                    VarType+0x50: initialised to 1, opcode 7 clears it. */
+    uint8_t  op8_present;   /* [33] 1 when opcode 8 is present (client VarType+0x51). */
     uint8_t  has_op4;       /* [34] 1 iff opcode 4 is present. */
     uint8_t  op4;           /* [35] opcode 4 raw byte (VarType+0x48), 0 if absent. */
     uint8_t  has_op5;       /* [36] 1 iff opcode 5 is present. */
