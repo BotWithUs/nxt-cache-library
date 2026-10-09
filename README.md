@@ -17,7 +17,7 @@ built on top.
   as a transparent fallback for archives missing from a local cache.
 - **Decode config types** — npc, item, loc, seq, varbit, enum, struct, inv,
   param, quest, underlay, overlay, worldmap, dbrow, interfaces, sprites,
-  models, gamevals, and map/loc spawns.
+  models, gamevals, stat (skill) definitions, and map/loc spawns.
 - **Build map-square clip grids** — directional per-tile collision flags plus
   the interactable scenery crossings that sit alongside them, for pathfinding
   consumers.
@@ -133,6 +133,12 @@ if (nxt_get_mapsquare_locs(cache, 50, 50, &locs, &count) == NXT_OK) {
     nxt_free(locs);
 }
 ```
+
+Stat (skill) definitions come from defaults index 28, group 9. `nxt_get_stat_info`
+fills a fixed-size `nxt_stat_info` (max level, base level, XP table in use),
+`nxt_get_stat_xp_table` returns the XP thresholds the stat levels against (its
+own table, or the default 120-entry curve), and `nxt_stat_level_for_xp` applies
+the client's XP-to-level rule. `nxt_get_stats_json` returns the whole group.
 
 ## License
 

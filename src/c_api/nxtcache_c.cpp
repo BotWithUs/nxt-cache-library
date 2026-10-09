@@ -7,6 +7,7 @@
 #include "config_types/InterfaceTypes.h"
 #include "config_types/ModelType.h"
 #include "config_types/SpriteType.h"
+#include "config_types/StatType.h"
 #include "config_types/Types.h"
 #include "config_types/VarPlayerType.h"
 #include "core/Archive.h"
@@ -82,6 +83,70 @@ char *dupString(const std::string &s)
     std::memcpy(buf, s.data(), s.size());
     buf[s.size()] = '\0';
     return buf;
+}
+
+// Defaults index 28, group 9, file 0 (see config_types/StatType.h).
+nxt_result loadStatDefaults(Cache &c, StatDefaults &out)
+{
+    constexpr int kDefaultsIndex = 28;
+    constexpr int kStatsGroup = 9;
+    auto &archive = c.source->archive(kDefaultsIndex, kStatsGroup);
+    if (archive.id == -1)
+    {
+        setError("stat defaults (index 28, group 9) not found");
+        return NXT_ERR_NOT_FOUND;
+    }
+    auto buffer = archive.readFile(0);
+    if (buffer.buffer == nullptr || buffer.remaining() == 0)
+    {
+        setError("stat defaults file is empty");
+        return NXT_ERR_NOT_FOUND;
+    }
+    try
+    {
+        out.decode(buffer);
+    }
+    catch (const std::runtime_error &e)
+    {
+        setError(std::string("stat defaults decode failed: ") + e.what());
+        return NXT_ERR_DECODE;
+    }
+    return NXT_OK;
+}
+
+// Loads the group and finds one stat; outStat points into outDefs.
+nxt_result findStat(nxt_cache *handle, int statId, StatDefaults &outDefs, const StatType *&outStat)
+{
+    nxt_result rc = loadStatDefaults(*reinterpret_cast<Cache *>(handle), outDefs);
+    if (rc != NXT_OK)
+    {
+        return rc;
+    }
+    outStat = outDefs.find(statId);
+    if (outStat == nullptr)
+    {
+        setError("stat " + std::to_string(statId) + " not found");
+        return NXT_ERR_NOT_FOUND;
+    }
+    return NXT_OK;
+}
+
+nxt_stat_info toStatInfo(const StatDefaults &defs, const StatType &s)
+{
+    nxt_stat_info info{};
+    info.struct_size = sizeof(nxt_stat_info);
+    info.version = NXT_STAT_INFO_VERSION;
+    info.id = s.id;
+    info.max_level = s.maxLevel;
+    info.base_level = s.baseLevel;
+    info.flags = s.flags;
+    info.cap_level_raw = s.capLevelRaw;
+    info.cap_level = s.capLevel;
+    info.cap_xp_tenths = s.capXpTenths;
+    info.xp_table_index = s.xpTableIndex;
+    info.xp_table_length = static_cast<int32_t>(defs.xpTableFor(s).size());
+    info.trailing_flag = s.trailingFlag ? 1 : 0;
+    return info;
 }
 
 // Look up the file matching `id` for the given mapping; return null if missing.
@@ -1880,6 +1945,134 @@ nxt_result nxt_get_varp_json(nxt_cache *handle, int id, char **out_json, size_t 
     catch (const std::exception &e)
     {
         setError(std::string("get_varp_json failed: ") + e.what());
+        return NXT_ERR_IO;
+    }
+}
+
+nxt_result nxt_get_stat_info(nxt_cache *handle, int stat_id, nxt_stat_info *io_info)
+{
+    if (!handle || !io_info)
+    {
+        setError("invalid argument: null handle or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    if (io_info->struct_size < sizeof(nxt_stat_info))
+    {
+        setError("nxt_stat_info.struct_size " + std::to_string(io_info->struct_size) +
+                 " is smaller than " + std::to_string(sizeof(nxt_stat_info)));
+        return NXT_ERR_INVALID;
+    }
+    try
+    {
+        StatDefaults defs;
+        const StatType *stat = nullptr;
+        nxt_result rc = findStat(handle, stat_id, defs, stat);
+        if (rc == NXT_OK)
+        {
+            *io_info = toStatInfo(defs, *stat);
+        }
+        return rc;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("get_stat_info failed: ") + e.what());
+        return NXT_ERR_IO;
+    }
+}
+
+nxt_result nxt_get_stat_xp_table(nxt_cache *handle, int stat_id, uint32_t **out_xp, size_t *out_count)
+{
+    if (!handle || !out_xp || !out_count)
+    {
+        setError("invalid argument: null handle or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    try
+    {
+        StatDefaults defs;
+        const StatType *stat = nullptr;
+        nxt_result rc = findStat(handle, stat_id, defs, stat);
+        if (rc != NXT_OK)
+        {
+            return rc;
+        }
+        const auto &table = defs.xpTableFor(*stat);
+        size_t bytes = (table.empty() ? 1 : table.size()) * sizeof(uint32_t);
+        auto *buf = static_cast<uint32_t *>(std::malloc(bytes));
+        if (!buf)
+        {
+            setError("malloc failed");
+            return NXT_ERR_INTERNAL;
+        }
+        if (!table.empty())
+        {
+            std::memcpy(buf, table.data(), table.size() * sizeof(uint32_t));
+        }
+        *out_xp = buf;
+        *out_count = table.size();
+        return NXT_OK;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("get_stat_xp_table failed: ") + e.what());
+        return NXT_ERR_IO;
+    }
+}
+
+nxt_result nxt_stat_level_for_xp(nxt_cache *handle, int stat_id, uint32_t xp, int32_t *out_level)
+{
+    if (!handle || !out_level)
+    {
+        setError("invalid argument: null handle or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    try
+    {
+        StatDefaults defs;
+        const StatType *stat = nullptr;
+        nxt_result rc = findStat(handle, stat_id, defs, stat);
+        if (rc == NXT_OK)
+        {
+            *out_level = defs.levelForXp(*stat, xp);
+        }
+        return rc;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("stat_level_for_xp failed: ") + e.what());
+        return NXT_ERR_IO;
+    }
+}
+
+nxt_result nxt_get_stats_json(nxt_cache *handle, char **out_json, size_t *out_len)
+{
+    if (!handle || !out_json || !out_len)
+    {
+        setError("invalid argument: null handle or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    try
+    {
+        StatDefaults defs;
+        nxt_result rc = loadStatDefaults(*reinterpret_cast<Cache *>(handle), defs);
+        if (rc != NXT_OK)
+        {
+            return rc;
+        }
+        const std::string text = nxtdump::toJson(defs).dump();
+        char *buf = dupString(text);
+        if (!buf)
+        {
+            setError("malloc failed");
+            return NXT_ERR_INTERNAL;
+        }
+        *out_json = buf;
+        *out_len = text.size();
+        return NXT_OK;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("get_stats_json failed: ") + e.what());
         return NXT_ERR_IO;
     }
 }

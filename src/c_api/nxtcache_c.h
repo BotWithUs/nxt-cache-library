@@ -649,6 +649,69 @@ NXT_API nxt_result nxt_get_varp_info(nxt_cache *cache, int id, nxt_varp_info *io
    NXT_ERR_NOT_FOUND means the varp does not exist. */
 NXT_API nxt_result nxt_get_varp_json(nxt_cache *cache, int id, char **out_json, size_t *out_len);
 
+/* ---- Stat (skill) definitions -------------------------------------------
+ *
+ * Defaults index 28, group 9, decoded as rs2client 950-1 does it (sub_3D59A0,
+ * reached from the defaults dispatcher sub_2AF0D0). Each stat has a maximum
+ * level, an optional base level (default 1), and either one of the group's own
+ * XP tables or the default table (sub_3D5880: 120 entries, the classic
+ * floor(lvl + 300 * 2^(lvl/7)) / 4 curve). The level for an XP value follows
+ * jag::game::StatManager::SetStat (0x3573F0): base level plus the number of
+ * table entries <= xp, capped at the maximum.
+ */
+
+#define NXT_STAT_INFO_VERSION 1
+
+/* Fixed-size POD, 48 bytes, no implicit padding. Offsets in brackets. */
+typedef struct nxt_stat_info
+{
+    uint32_t struct_size;     /* [0]  IN: caller sets sizeof(nxt_stat_info). */
+    uint32_t version;         /* [4]  OUT: NXT_STAT_INFO_VERSION. */
+    int32_t  id;              /* [8]  stat id (0 = Attack, ...). */
+    int32_t  max_level;       /* [12] u16 maximum level. */
+    int32_t  base_level;      /* [16] level at 0 XP (flags & 8; default 1). */
+    int32_t  flags;           /* [20] raw flag byte. */
+    int32_t  cap_level_raw;   /* [24] the flags & 2 byte, 0 when absent. */
+    int32_t  cap_level;       /* [28] flags & 1: min(cap_level_raw, max_level); else -1.
+                                      Plausibly the free-to-play cap (unverified). */
+    int32_t  cap_xp_tenths;   /* [32] flags & 1: 10 x XP at cap_level, as the client
+                                      stores it; else -1. */
+    int32_t  xp_table_index;  /* [36] the group's own table (flags & 4), -1 = default. */
+    int32_t  xp_table_length; /* [40] entries in the table this stat uses. */
+    int32_t  trailing_flag;   /* [44] the record's last byte == 1 (meaning unknown). */
+} nxt_stat_info;
+
+#if defined(__cplusplus)
+  #define NXT_STAT_LAYOUT_ASSERT(cond, msg) static_assert(cond, msg)
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+  #define NXT_STAT_LAYOUT_ASSERT(cond, msg) _Static_assert(cond, msg)
+#else
+  #define NXT_STAT_LAYOUT_ASSERT(cond, msg)
+#endif
+NXT_STAT_LAYOUT_ASSERT(sizeof(nxt_stat_info) == 48, "nxt_stat_info is a fixed 48-byte ABI");
+NXT_STAT_LAYOUT_ASSERT(offsetof(nxt_stat_info, id) == 8, "nxt_stat_info layout drifted");
+NXT_STAT_LAYOUT_ASSERT(offsetof(nxt_stat_info, cap_xp_tenths) == 32, "nxt_stat_info layout drifted");
+NXT_STAT_LAYOUT_ASSERT(offsetof(nxt_stat_info, trailing_flag) == 44, "nxt_stat_info layout drifted");
+#undef NXT_STAT_LAYOUT_ASSERT
+
+/* One stat's definition. Same struct_size contract as nxt_get_varp_info: set
+   io_info->struct_size first; the struct is written only on NXT_OK.
+   NXT_ERR_NOT_FOUND means the group has no such stat. */
+NXT_API nxt_result nxt_get_stat_info(nxt_cache *cache, int stat_id, nxt_stat_info *io_info);
+
+/* The XP table stat_id levels against (entry i = XP for level base + i + 1).
+   *out_xp is freshly allocated (free with nxt_free), *out_count entries. */
+NXT_API nxt_result nxt_get_stat_xp_table(nxt_cache *cache, int stat_id,
+                                         uint32_t **out_xp, size_t *out_count);
+
+/* The client's level for whole-XP value xp (StatManager::SetStat). */
+NXT_API nxt_result nxt_stat_level_for_xp(nxt_cache *cache, int stat_id, uint32_t xp,
+                                         int32_t *out_level);
+
+/* Every stat and every table as JSON: { "stats": [...], "xpTables": [[...]],
+   "defaultXpTable": [...] }. Free *out_json with nxt_free. */
+NXT_API nxt_result nxt_get_stats_json(nxt_cache *cache, char **out_json, size_t *out_len);
+
 #ifdef __cplusplus
 }  /* extern "C" */
 #endif
