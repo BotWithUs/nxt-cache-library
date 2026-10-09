@@ -481,6 +481,7 @@ if(NXTCACHE_BUILD_TESTS) # build-tests
 
 	set(CMKR_TARGET nxtcache-if-stats-test)
 	enable_testing()
+	add_test(NAME if_stats_offline COMMAND nxtcache-if-stats-test --offline)
 	add_test(NAME if_stats COMMAND nxtcache-if-stats-test)
 	set_tests_properties(if_stats PROPERTIES SKIP_RETURN_CODE 77)
 

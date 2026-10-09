@@ -48,6 +48,10 @@ StatType readStat(RSBuffer &buffer, const StatDefaults &defs)
         s.baseLevel = u8(buffer);
     }
     s.trailingFlag = u8(buffer) == 1;
+    // The client indexes its table array without a bounds check; here an
+    // out-of-range index is recorded and the stat falls back to the default.
+    s.hasInvalidXpTableIndex =
+        s.xpTableIndex >= 0 && static_cast<size_t>(s.xpTableIndex) >= defs.xpTables.size();
     if (s.flags & 1)
     {
         s.capLevel = std::min(s.capLevelRaw, s.maxLevel);
@@ -57,7 +61,7 @@ StatType readStat(RSBuffer &buffer, const StatDefaults &defs)
         if (span > 0 && !table.empty())
         {
             size_t index = std::min(static_cast<size_t>(span), table.size()) - 1;
-            s.capXpTenths = static_cast<int>(10 * table[index]);
+            s.capXpTenths = 10 * static_cast<int64_t>(table[index]);
         }
     }
     return s;
@@ -107,8 +111,8 @@ const std::vector<uint32_t> &defaultStatXpTable()
 
 void StatDefaults::decode(RSBuffer &buffer)
 {
-    stats.clear();
-    xpTables.clear();
+    // Decode into a scratch object so a throw leaves *this untouched.
+    StatDefaults next;
     for (int op = u8(buffer); op != 0; op = u8(buffer))
     {
         if (op == 1)
@@ -116,15 +120,18 @@ void StatDefaults::decode(RSBuffer &buffer)
             int count = u8(buffer);
             for (int i = 0; i < count; i++)
             {
-                stats.push_back(readStat(buffer, *this));
+                next.stats.push_back(readStat(buffer, next));
             }
         }
         else if (op == 2)
         {
-            readTables(buffer, *this);
+            readTables(buffer, next);
         }
         // Any other opcode carries no payload: the client just reads the next.
     }
+    // The client stops at opcode 0 and ignores anything after it.
+    next.trailingBytes = static_cast<int>(buffer.remaining());
+    *this = std::move(next);
 }
 
 const StatType *StatDefaults::find(int statId) const

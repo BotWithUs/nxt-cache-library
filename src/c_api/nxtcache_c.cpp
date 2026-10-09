@@ -93,14 +93,14 @@ nxt_result loadStatDefaults(Cache &c, StatDefaults &out)
     auto &archive = c.source->archive(kDefaultsIndex, kStatsGroup);
     if (archive.id == -1)
     {
-        setError("stat defaults (index 28, group 9) not found");
-        return NXT_ERR_NOT_FOUND;
+        setError("stat defaults (index 28, group 9) not in the cache");
+        return NXT_ERR_IO;
     }
     auto buffer = archive.readFile(0);
     if (buffer.buffer == nullptr || buffer.remaining() == 0)
     {
-        setError("stat defaults file is empty");
-        return NXT_ERR_NOT_FOUND;
+        setError("stat defaults file is empty or unreadable");
+        return NXT_ERR_IO;
     }
     try
     {
@@ -146,6 +146,7 @@ nxt_stat_info toStatInfo(const StatDefaults &defs, const StatType &s)
     info.xp_table_index = s.xpTableIndex;
     info.xp_table_length = static_cast<int32_t>(defs.xpTableFor(s).size());
     info.trailing_flag = s.trailingFlag ? 1 : 0;
+    info.xp_table_index_invalid = s.hasInvalidXpTableIndex ? 1 : 0;
     return info;
 }
 

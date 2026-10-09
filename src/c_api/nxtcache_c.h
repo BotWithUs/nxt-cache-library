@@ -658,11 +658,36 @@ NXT_API nxt_result nxt_get_varp_json(nxt_cache *cache, int id, char **out_json, 
  * floor(lvl + 300 * 2^(lvl/7)) / 4 curve). The level for an XP value follows
  * jag::game::StatManager::SetStat (0x3573F0): base level plus the number of
  * table entries <= xp, capped at the maximum.
+ *
+ * Return codes, for every entry below:
+ *   NXT_OK            the answer is valid.
+ *   NXT_ERR_NOT_FOUND the group decoded but has no stat with this id (negative
+ *                     ids included). Not returned by nxt_get_stats_json.
+ *   NXT_ERR_IO        group 9 could not be read (absent from the cache, blob
+ *                     unreadable, network failure). Nothing is known about the
+ *                     id. Never treat this as "no such stat".
+ *   NXT_ERR_DECODE    group 9 was read but its bytes are malformed (truncated).
+ *   NXT_ERR_INVALID   null handle or out-pointer, or io_info->struct_size is
+ *                     smaller than sizeof(nxt_stat_info).
+ *   NXT_ERR_INTERNAL  allocation failure.
+ * nxt_last_error() carries a message for every non-OK code.
+ *
+ * All four are new in this revision; an older NXTCache.dll lacks them, so a
+ * binder resolves them as optional symbols.
+ *
+ * Threading: NOT safe to call concurrently on one nxt_cache*, like every other
+ * entry in this header. Serialise per handle; different handles may be used
+ * from different threads. Nothing is memoised in the handle: every call reads
+ * and decodes the group (one file, under 1 KB), so a host converting XP to
+ * levels in a hot loop should fetch the table once with nxt_get_stat_xp_table
+ * and apply the rule above itself. With live fallback enabled and the group
+ * missing locally, or on a nxt_cache_open_live* handle, a call can block on a
+ * JS5 fetch.
  */
 
 #define NXT_STAT_INFO_VERSION 1
 
-/* Fixed-size POD, 48 bytes, no implicit padding. Offsets in brackets. */
+/* Fixed-size POD, 56 bytes, no implicit padding. Offsets in brackets. */
 typedef struct nxt_stat_info
 {
     uint32_t struct_size;     /* [0]  IN: caller sets sizeof(nxt_stat_info). */
@@ -674,11 +699,15 @@ typedef struct nxt_stat_info
     int32_t  cap_level_raw;   /* [24] the flags & 2 byte, 0 when absent. */
     int32_t  cap_level;       /* [28] flags & 1: min(cap_level_raw, max_level); else -1.
                                       Plausibly the free-to-play cap (unverified). */
-    int32_t  cap_xp_tenths;   /* [32] flags & 1: 10 x XP at cap_level, as the client
-                                      stores it; else -1. */
-    int32_t  xp_table_index;  /* [36] the group's own table (flags & 4), -1 = default. */
-    int32_t  xp_table_length; /* [40] entries in the table this stat uses. */
-    int32_t  trailing_flag;   /* [44] the record's last byte == 1 (meaning unknown). */
+    int64_t  cap_xp_tenths;   /* [32] flags & 1: 10 x XP at cap_level, as the client
+                                      computes it (widened, cannot overflow); else -1. */
+    int32_t  xp_table_index;  /* [40] the group's own table (flags & 4), -1 = default.
+                                      Raw value, even when invalid (see [52]). */
+    int32_t  xp_table_length; /* [44] entries in the table this stat actually uses. */
+    int32_t  trailing_flag;   /* [48] the record's last byte == 1 (meaning unknown). */
+    int32_t  xp_table_index_invalid; /* [52] 1 when xp_table_index names no table in the
+                                      group; the default table is used instead (the
+                                      client would index out of bounds). */
 } nxt_stat_info;
 
 #if defined(__cplusplus)
@@ -688,15 +717,17 @@ typedef struct nxt_stat_info
 #else
   #define NXT_STAT_LAYOUT_ASSERT(cond, msg)
 #endif
-NXT_STAT_LAYOUT_ASSERT(sizeof(nxt_stat_info) == 48, "nxt_stat_info is a fixed 48-byte ABI");
+NXT_STAT_LAYOUT_ASSERT(sizeof(nxt_stat_info) == 56, "nxt_stat_info is a fixed 56-byte ABI");
 NXT_STAT_LAYOUT_ASSERT(offsetof(nxt_stat_info, id) == 8, "nxt_stat_info layout drifted");
+NXT_STAT_LAYOUT_ASSERT(offsetof(nxt_stat_info, cap_level) == 28, "nxt_stat_info layout drifted");
 NXT_STAT_LAYOUT_ASSERT(offsetof(nxt_stat_info, cap_xp_tenths) == 32, "nxt_stat_info layout drifted");
-NXT_STAT_LAYOUT_ASSERT(offsetof(nxt_stat_info, trailing_flag) == 44, "nxt_stat_info layout drifted");
+NXT_STAT_LAYOUT_ASSERT(offsetof(nxt_stat_info, xp_table_index) == 40, "nxt_stat_info layout drifted");
+NXT_STAT_LAYOUT_ASSERT(offsetof(nxt_stat_info, trailing_flag) == 48, "nxt_stat_info layout drifted");
+NXT_STAT_LAYOUT_ASSERT(offsetof(nxt_stat_info, xp_table_index_invalid) == 52, "nxt_stat_info layout drifted");
 #undef NXT_STAT_LAYOUT_ASSERT
 
 /* One stat's definition. Same struct_size contract as nxt_get_varp_info: set
-   io_info->struct_size first; the struct is written only on NXT_OK.
-   NXT_ERR_NOT_FOUND means the group has no such stat. */
+   io_info->struct_size first; the struct is written only on NXT_OK. */
 NXT_API nxt_result nxt_get_stat_info(nxt_cache *cache, int stat_id, nxt_stat_info *io_info);
 
 /* The XP table stat_id levels against (entry i = XP for level base + i + 1).

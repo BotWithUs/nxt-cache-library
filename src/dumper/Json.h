@@ -67,6 +67,7 @@ inline json toJson(const StatType &s)
         {"capLevel", s.capLevel},
         {"capXpTenths", s.capXpTenths},
         {"xpTableIndex", s.xpTableIndex},
+        {"xpTableIndexInvalid", s.hasInvalidXpTableIndex},
         {"trailingFlag", s.trailingFlag},
     };
 }
