@@ -203,6 +203,59 @@ NXT_API nxt_result nxt_get_mapsquare_clip_and_crossings(nxt_cache *cache, int sq
                                                        nxt_crossing **out_crossings,
                                                        size_t *out_crossing_count);
 
+/* ---- Map location placements --------------------------------------------
+ *
+ * Every static scenery (loc) placement in one map square's location stream
+ * (cache index 5, file 0), exactly as stored. Unlike the crossings above this
+ * is unfiltered (every loc, interactable or not) and resolves no loc defs:
+ * no terrain, collision, footprint or bridge adjustment, so `plane` is the
+ * stored plane. Coordinates are absolute world tiles (square base + local), so
+ * world_x >> 6 == square_x and world_y >> 6 == square_y for every record.
+ * Mirrors maps::LocSpawn.
+ */
+
+/* Fixed-size POD, 12 bytes, no implicit padding. Offsets in brackets. */
+typedef struct nxt_loc_spawn
+{
+    int32_t  object_id;     /* [0]  loc type id placed here */
+    uint16_t world_x;       /* [4]  absolute world tile x */
+    uint16_t world_y;       /* [6]  absolute world tile y */
+    uint8_t  plane;         /* [8]  0..3, as stored (no bridge adjustment) */
+    uint8_t  shape;         /* [9]  RT4 loc shape */
+    uint8_t  rotation;      /* [10] 0..3 */
+    uint8_t  _pad;          /* [11] always 0 */
+} nxt_loc_spawn;
+
+/* Layout pins, checked in every C11 / C++ translation unit that includes this
+   header. Older C modes skip them. */
+#if defined(__cplusplus)
+  #define NXT_LOC_LAYOUT_ASSERT(cond, msg) static_assert(cond, msg)
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+  #define NXT_LOC_LAYOUT_ASSERT(cond, msg) _Static_assert(cond, msg)
+#else
+  #define NXT_LOC_LAYOUT_ASSERT(cond, msg)
+#endif
+NXT_LOC_LAYOUT_ASSERT(sizeof(nxt_loc_spawn) == 12, "nxt_loc_spawn is a fixed 12-byte ABI");
+NXT_LOC_LAYOUT_ASSERT(offsetof(nxt_loc_spawn, object_id) == 0, "nxt_loc_spawn layout drifted");
+NXT_LOC_LAYOUT_ASSERT(offsetof(nxt_loc_spawn, world_x) == 4, "nxt_loc_spawn layout drifted");
+NXT_LOC_LAYOUT_ASSERT(offsetof(nxt_loc_spawn, world_y) == 6, "nxt_loc_spawn layout drifted");
+NXT_LOC_LAYOUT_ASSERT(offsetof(nxt_loc_spawn, plane) == 8, "nxt_loc_spawn layout drifted");
+NXT_LOC_LAYOUT_ASSERT(offsetof(nxt_loc_spawn, shape) == 9, "nxt_loc_spawn layout drifted");
+NXT_LOC_LAYOUT_ASSERT(offsetof(nxt_loc_spawn, rotation) == 10, "nxt_loc_spawn layout drifted");
+NXT_LOC_LAYOUT_ASSERT(offsetof(nxt_loc_spawn, _pad) == 11, "nxt_loc_spawn layout drifted");
+#undef NXT_LOC_LAYOUT_ASSERT
+
+/* Decode every loc placement in one map square (cache index 5, file 0). On
+   success *out_locs is a freshly allocated array of *out_count records (free
+   with nxt_free); a square with no placements yields *out_locs == NULL and
+   *out_count == 0 with NXT_OK. Returns NXT_ERR_NOT_FOUND if the square is absent,
+   and NXT_ERR_INVALID for a null handle / out parameter or a square outside
+   0 <= square_x < 128, 0 <= square_y < 1024 (the range whose world tiles fit
+   the uint16 fields). On any failure with non-NULL out parameters, *out_locs
+   is NULL and *out_count is 0, so the caller has nothing to free. */
+NXT_API nxt_result nxt_get_mapsquare_locs(nxt_cache *cache, int square_x, int square_y,
+                                          nxt_loc_spawn **out_locs, size_t *out_count);
+
 /* ---- Config-type getters (single-entry JSON) ---------------------------
  *
  * Each function returns a NUL-terminated UTF-8 JSON document describing one

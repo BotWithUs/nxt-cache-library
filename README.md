@@ -115,6 +115,25 @@ Every entry point returns an `nxt_result`; on failure `nxt_last_error()` carries
 the message. Anything handed back through an out-parameter is owned by the
 caller and must be released with `nxt_free`.
 
+Map squares are addressed by square coordinates (world tile / 64). Alongside the
+clip grid (`nxt_get_mapsquare_clip`) and interactable crossings
+(`nxt_get_mapsquare_crossings`), `nxt_get_mapsquare_locs` returns every static
+scenery placement in a square as 12-byte `nxt_loc_spawn` records (loc id,
+absolute world x/y, plane, shape, rotation), unfiltered and without loc-def
+resolution. An empty square is `NXT_OK` with a NULL array; a square absent from
+the cache is `NXT_ERR_NOT_FOUND`:
+
+```c
+nxt_loc_spawn *locs  = NULL;
+size_t         count = 0;
+if (nxt_get_mapsquare_locs(cache, 50, 50, &locs, &count) == NXT_OK) {
+    for (size_t i = 0; i < count; i++)
+        printf("loc %d at %u,%u,%u\n", locs[i].object_id,
+               locs[i].world_x, locs[i].world_y, locs[i].plane);
+    nxt_free(locs);
+}
+```
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
