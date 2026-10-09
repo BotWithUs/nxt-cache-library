@@ -41,4 +41,9 @@ public:
     // Throws std::runtime_error if the jav_config fetch or handshake fails.
     // Pass beta=true to hit the BETA jav_config + JS5 endpoint instead of live.
     void enableLiveFallback(bool beta = false);
+
+    // Same, against a server config the caller already holds: no jav_config
+    // request is made. No-op if the fallback is already enabled. Throws
+    // std::runtime_error if the handshake fails, leaving the cache unchanged.
+    void enableLiveFallback(const js5::ServerConfig &config);
 };

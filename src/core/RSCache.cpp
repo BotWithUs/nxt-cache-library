@@ -6,6 +6,7 @@
 
 #include <cstdio>
 #include <stdexcept>
+#include <utility>
 
 RSCache::~RSCache() = default;
 
@@ -37,9 +38,19 @@ void RSCache::enableLiveFallback(bool beta)
 {
     if (fallbackEnabled_) return;
 
-    liveConfig_ = std::make_unique<js5::ServerConfig>(
-        beta ? js5::fetchServerConfigBeta() : js5::fetchServerConfig());
-    liveSocket_ = std::make_unique<js5::Js5Socket>(*liveConfig_);
+    enableLiveFallback(beta ? js5::fetchServerConfigBeta() : js5::fetchServerConfig());
+}
+
+void RSCache::enableLiveFallback(const js5::ServerConfig &config)
+{
+    if (fallbackEnabled_) return;
+
+    // Build both pieces before committing either, so a failed handshake leaves
+    // the cache exactly as it was.
+    auto newConfig = std::make_unique<js5::ServerConfig>(config);
+    auto newSocket = std::make_unique<js5::Js5Socket>(*newConfig);
+    liveConfig_ = std::move(newConfig);
+    liveSocket_ = std::move(newSocket);
     fallbackEnabled_ = true;
 
     auto resolver = makeResolver(liveSocket_.get());

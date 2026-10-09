@@ -1,6 +1,7 @@
 #define NXTCACHE_BUILDING
 
 #include "c_api/nxtcache_c.h"
+#include "c_api/Js5ServerConfig.h"
 
 #include "config_types/GameVal.h"
 #include "config_types/InterfaceTypes.h"
@@ -402,61 +403,40 @@ nxt_varp_info toVarpInfo(const VarPlayerType &type)
 
 // nxt_varp_info layout pins live in nxtcache_c.h (NXT_VARP_LAYOUT_ASSERT).
 
-}  // namespace
-
-extern "C" {
-
-const char *nxt_last_error(void)
+// Fetches the master reference table (file 255,255) over a fresh socket built
+// from `config` and publishes its per-major CRCs. `fn` prefixes every error
+// message. The outputs must be non-null and already cleared by the caller.
+//
+// The master index (file 255,255) doesn't share the format of a regular
+// reference table, so Js5Index isn't used: the file is fetched raw,
+// decompressed, and walked in the NXT master format (from OpenNXT's
+// ChecksumTable.decode):
+//   byte count
+//   for each i in 0..count-1:
+//     u32 BE crc
+//     u32 BE version
+//     u32 BE files
+//     u32 BE size
+//     byte[64] whirlpool
+// -> 1 + count * 80 bytes (any trailing bytes are RSA-signed hash + slop)
+nxt_result fetchMasterCrcsFrom(const char *fn, const js5::ServerConfig &config,
+                               uint32_t **out_crcs, size_t *out_count)
 {
-    return g_lastError.c_str();
-}
-
-void nxt_free(void *ptr)
-{
-    std::free(ptr);
-}
-
-nxt_result nxt_fetch_master_crcs(uint32_t **out_crcs, size_t *out_count)
-{
-    if (!out_crcs || !out_count)
-    {
-        setError("nxt_fetch_master_crcs: null output");
-        return NXT_ERR_INVALID;
-    }
-    *out_crcs  = nullptr;
-    *out_count = 0;
     try
     {
-        // The master index (file 255,255) doesn't share the format of a
-        // regular reference table — so we don't use Js5Index here. Instead
-        // we fetch (255,255) raw, decompress, and walk the master format:
-        // <count u32 BE>? then per-entry <crc u32 BE><version u32 BE> ...
-        // The format varies — fall back to "the bytes ARE a u32 CRC array
-        // alternating with versions" if there's no count header.
-        js5::ServerConfig config = js5::fetchServerConfig();
         js5::Js5Socket socket(config);
         auto raw = socket.getFile(255, 255);
         auto bytes = js5::decompress(raw.data(), raw.size());
-
-        // NXT master index format (from OpenNXT's ChecksumTable.decode):
-        //   byte count
-        //   for each i in 0..count-1:
-        //     u32 BE crc
-        //     u32 BE version
-        //     u32 BE files
-        //     u32 BE size
-        //     byte[64] whirlpool
-        // → 1 + count * 80 bytes (any trailing bytes are RSA-signed hash + slop)
         if (bytes.empty())
         {
-            setError("nxt_fetch_master_crcs: empty master index");
+            setError(std::string(fn) + ": empty master index");
             return NXT_ERR_DECODE;
         }
         constexpr std::size_t entrySize = 4 + 4 + 4 + 4 + 64;
         const std::size_t count = static_cast<std::size_t>(bytes[0]);
         if (1 + count * entrySize > bytes.size())
         {
-            setError("nxt_fetch_master_crcs: master count=" +
+            setError(std::string(fn) + ": master count=" +
                      std::to_string(count) + " but only " +
                      std::to_string(bytes.size()) + " bytes available");
             return NXT_ERR_DECODE;
@@ -464,7 +444,7 @@ nxt_result nxt_fetch_master_crcs(uint32_t **out_crcs, size_t *out_count)
         auto *buf = static_cast<uint32_t *>(std::malloc(count * sizeof(uint32_t)));
         if (!buf)
         {
-            setError("nxt_fetch_master_crcs: out of memory");
+            setError(std::string(fn) + ": out of memory");
             return NXT_ERR_INTERNAL;
         }
         for (std::size_t i = 0; i < count; ++i)
@@ -481,9 +461,130 @@ nxt_result nxt_fetch_master_crcs(uint32_t **out_crcs, size_t *out_count)
     }
     catch (const std::exception &e)
     {
-        setError(std::string("nxt_fetch_master_crcs: ") + e.what());
+        setError(std::string(fn) + ": " + e.what());
         return NXT_ERR_IO;
     }
+}
+
+// Rejects null outputs, clears non-null ones. Returns false on a null output.
+bool clearCrcOutputs(const char *fn, uint32_t **out_crcs, size_t *out_count)
+{
+    if (!out_crcs || !out_count)
+    {
+        setError(std::string(fn) + ": null output");
+        return false;
+    }
+    *out_crcs  = nullptr;
+    *out_count = 0;
+    return true;
+}
+
+// Converts a caller config, reporting failures as "<fn>: <reason>".
+bool resolveCallerConfig(const char *fn, const nxt_js5_server_config *config,
+                         js5::ServerConfig &outConfig)
+{
+    std::string why;
+    if (!nxt::capi::toServerConfig(config, outConfig, why))
+    {
+        setError(std::string(fn) + ": " + why);
+        return false;
+    }
+    return true;
+}
+
+// Wraps a live CacheSource made by `makeSource` in a handle. `what` prefixes
+// the error message; returns NULL on failure.
+template <typename MakeSource>
+nxt_cache *openLiveImpl(const char *what, MakeSource &&makeSource)
+{
+    try
+    {
+        auto wrap = std::make_unique<Cache>();
+        wrap->source = makeSource();
+        return reinterpret_cast<nxt_cache *>(wrap.release());
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string(what) + " failed: " + e.what());
+        return nullptr;
+    }
+}
+
+// Runs `enable(RSCache &)` on a local cache; a live cache is a no-op.
+template <typename Enable>
+nxt_result enableLiveFallbackImpl(nxt_cache *handle, Enable &&enable)
+{
+    if (!handle)
+    {
+        setError("null handle");
+        return NXT_ERR_INVALID;
+    }
+    auto *c = reinterpret_cast<Cache *>(handle);
+    if (!c->local)
+    {
+        // Already a live cache — fallback is a no-op.
+        return NXT_OK;
+    }
+    try
+    {
+        enable(*c->local);
+        return NXT_OK;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("enable_live_fallback failed: ") + e.what());
+        return NXT_ERR_IO;
+    }
+}
+
+}  // namespace
+
+extern "C" {
+
+const char *nxt_last_error(void)
+{
+    return g_lastError.c_str();
+}
+
+void nxt_free(void *ptr)
+{
+    std::free(ptr);
+}
+
+nxt_result nxt_fetch_master_crcs(uint32_t **out_crcs, size_t *out_count)
+{
+    constexpr const char *fn = "nxt_fetch_master_crcs";
+    if (!clearCrcOutputs(fn, out_crcs, out_count))
+    {
+        return NXT_ERR_INVALID;
+    }
+    js5::ServerConfig config;
+    try
+    {
+        config = js5::fetchServerConfig();
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string(fn) + ": " + e.what());
+        return NXT_ERR_IO;
+    }
+    return fetchMasterCrcsFrom(fn, config, out_crcs, out_count);
+}
+
+nxt_result nxt_fetch_master_crcs_with_config(const nxt_js5_server_config *config,
+                                             uint32_t **out_crcs, size_t *out_count)
+{
+    constexpr const char *fn = "nxt_fetch_master_crcs_with_config";
+    if (!clearCrcOutputs(fn, out_crcs, out_count))
+    {
+        return NXT_ERR_INVALID;
+    }
+    js5::ServerConfig resolved;
+    if (!resolveCallerConfig(fn, config, resolved))
+    {
+        return NXT_ERR_INVALID;
+    }
+    return fetchMasterCrcsFrom(fn, resolved, out_crcs, out_count);
 }
 
 nxt_cache *nxt_cache_open_local(const char *cache_path)
@@ -510,71 +611,44 @@ nxt_cache *nxt_cache_open_local(const char *cache_path)
 
 nxt_cache *nxt_cache_open_live(void)
 {
-    try
-    {
-        auto wrap = std::make_unique<Cache>();
-        wrap->source = std::make_unique<js5::Js5Cache>(/*beta=*/false);
-        return reinterpret_cast<nxt_cache *>(wrap.release());
-    }
-    catch (const std::exception &e)
-    {
-        setError(std::string("open_live failed: ") + e.what());
-        return nullptr;
-    }
+    return openLiveImpl("open_live", []() { return std::make_unique<js5::Js5Cache>(/*beta=*/false); });
 }
 
 nxt_cache *nxt_cache_open_live_beta(void)
 {
-    try
+    return openLiveImpl("open_live_beta", []() { return std::make_unique<js5::Js5Cache>(/*beta=*/true); });
+}
+
+nxt_cache *nxt_cache_open_live_with_config(const nxt_js5_server_config *config)
+{
+    js5::ServerConfig resolved;
+    if (!resolveCallerConfig("nxt_cache_open_live_with_config", config, resolved))
     {
-        auto wrap = std::make_unique<Cache>();
-        wrap->source = std::make_unique<js5::Js5Cache>(/*beta=*/true);
-        return reinterpret_cast<nxt_cache *>(wrap.release());
-    }
-    catch (const std::exception &e)
-    {
-        setError(std::string("open_live_beta failed: ") + e.what());
         return nullptr;
     }
+    return openLiveImpl("open_live_with_config",
+                        [&resolved]() { return std::make_unique<js5::Js5Cache>(std::move(resolved)); });
 }
-
-namespace {
-
-nxt_result enableLiveFallbackImpl(nxt_cache *handle, bool beta)
-{
-    if (!handle)
-    {
-        setError("null handle");
-        return NXT_ERR_INVALID;
-    }
-    auto *c = reinterpret_cast<Cache *>(handle);
-    if (!c->local)
-    {
-        // Already a live cache — fallback is a no-op.
-        return NXT_OK;
-    }
-    try
-    {
-        c->local->enableLiveFallback(beta);
-        return NXT_OK;
-    }
-    catch (const std::exception &e)
-    {
-        setError(std::string("enable_live_fallback failed: ") + e.what());
-        return NXT_ERR_IO;
-    }
-}
-
-}  // namespace
 
 nxt_result nxt_cache_enable_live_fallback(nxt_cache *handle)
 {
-    return enableLiveFallbackImpl(handle, /*beta=*/false);
+    return enableLiveFallbackImpl(handle, [](RSCache &local) { local.enableLiveFallback(/*beta=*/false); });
 }
 
 nxt_result nxt_cache_enable_live_fallback_beta(nxt_cache *handle)
 {
-    return enableLiveFallbackImpl(handle, /*beta=*/true);
+    return enableLiveFallbackImpl(handle, [](RSCache &local) { local.enableLiveFallback(/*beta=*/true); });
+}
+
+nxt_result nxt_cache_enable_live_fallback_with_config(nxt_cache *handle,
+                                                      const nxt_js5_server_config *config)
+{
+    js5::ServerConfig resolved;
+    if (!resolveCallerConfig("nxt_cache_enable_live_fallback_with_config", config, resolved))
+    {
+        return NXT_ERR_INVALID;
+    }
+    return enableLiveFallbackImpl(handle, [&resolved](RSCache &local) { local.enableLiveFallback(resolved); });
 }
 
 void nxt_cache_close(nxt_cache *handle)
