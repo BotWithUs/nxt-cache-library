@@ -11,13 +11,16 @@
 namespace js5 {
 
 // CacheSource backed by the live JS5 binary protocol. Construction performs the
-// jav_config.ws fetch and the TCP handshake; per-major reference tables are loaded
-// lazily on first index() call, archives lazily on first archive() call.
+// TCP handshake (the bool constructor fetches jav_config.ws first); per-major
+// reference tables are loaded lazily on first index() call, archives lazily on
+// first archive() call.
 class Js5Cache : public CacheSource
 {
 public:
     // beta=true hits the BETA jav_config + JS5 endpoint instead of live.
     explicit Js5Cache(bool beta = false);
+    // Uses a server config the caller already holds; makes no jav_config request.
+    explicit Js5Cache(ServerConfig config);
 
     Js5Index &index(int id);
 

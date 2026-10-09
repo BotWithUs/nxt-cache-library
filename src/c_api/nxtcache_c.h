@@ -69,6 +69,76 @@ NXT_API nxt_result nxt_cache_enable_live_fallback(nxt_cache *cache);
    endpoint. Must be called BEFORE any read that needs the fallback. */
 NXT_API nxt_result nxt_cache_enable_live_fallback_beta(nxt_cache *cache);
 
+/* ---- Caller-supplied JS5 server config ---------------------------------
+ *
+ * The plain live entry points (nxt_cache_open_live, nxt_cache_enable_live_fallback,
+ * nxt_fetch_master_crcs) fetch their own jav_config from
+ * http://world3.runescape.com/jav_config.ws?binaryType=2. A caller that already
+ * holds a server config (for instance one fetched with its own binaryType and
+ * cookies) passes it through the *_with_config variants below instead, and the
+ * library then makes no jav_config request at all: it goes straight to the
+ * JS5 handshake. Connect and I/O timeouts are the library defaults (10 s / 30 s).
+ *
+ * Validation (any failure -> NXT_ERR_INVALID, nothing is contacted):
+ *   - config is non-NULL and config->struct_size == sizeof(nxt_js5_server_config)
+ *   - key is non-NULL and exactly 32 characters (the JS5 handshake key)
+ *   - build_major > 0 and build_minor >= 0
+ * The key is never written to nxt_last_error() or any log.
+ *
+ * Versioning: struct_size must equal sizeof(nxt_js5_server_config) EXACTLY, on
+ * purpose. This is v1. A future v2 that appends fields will accept both its own
+ * size and the v1 size (40), so a caller built against this header keeps working
+ * unchanged; a size the library does not know is always rejected.
+ *
+ * Ownership: the strings behind key and host are copied during the call. The
+ * library keeps no pointer into the struct or its strings, so the caller may
+ * free or overwrite them as soon as the call returns.
+ *
+ * Layout (64-bit): implicit padding at [4..7] and [34..39]; zero-initialise the
+ * struct, then set struct_size. */
+typedef struct nxt_js5_server_config
+{
+    uint32_t    struct_size;  /* [0]  IN: caller sets sizeof(nxt_js5_server_config); must
+                                      match exactly (see Versioning above). */
+    const char *key;          /* [8]  jav_config param 29: the 32-char JS5 key. Required.
+                                      Copied during the call. */
+    int32_t     build_major;  /* [16] jav_config server_version. Required, > 0. */
+    int32_t     build_minor;  /* [20] Usually 1. >= 0. */
+    const char *host;         /* [24] JS5 content host (jav_config param 37, else 49).
+                                      NULL or "" = "content.runescape.com".
+                                      Copied during the call. */
+    uint16_t    port;         /* [32] 0 = 43594. */
+} nxt_js5_server_config;
+
+/* Layout pins for 64-bit targets, checked in every C11 / C++ translation unit
+   that includes this header. Older C modes and 32-bit targets skip them. */
+#if UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu && defined(__cplusplus)
+  #define NXT_JS5_LAYOUT_ASSERT(cond, msg) static_assert(cond, msg)
+#elif UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFu && defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+  #define NXT_JS5_LAYOUT_ASSERT(cond, msg) _Static_assert(cond, msg)
+#else
+  #define NXT_JS5_LAYOUT_ASSERT(cond, msg)
+#endif
+NXT_JS5_LAYOUT_ASSERT(sizeof(nxt_js5_server_config) == 40, "nxt_js5_server_config is a fixed 40-byte ABI on 64-bit");
+NXT_JS5_LAYOUT_ASSERT(offsetof(nxt_js5_server_config, struct_size) == 0, "nxt_js5_server_config layout drifted");
+NXT_JS5_LAYOUT_ASSERT(offsetof(nxt_js5_server_config, key) == 8, "nxt_js5_server_config layout drifted");
+NXT_JS5_LAYOUT_ASSERT(offsetof(nxt_js5_server_config, build_major) == 16, "nxt_js5_server_config layout drifted");
+NXT_JS5_LAYOUT_ASSERT(offsetof(nxt_js5_server_config, build_minor) == 20, "nxt_js5_server_config layout drifted");
+NXT_JS5_LAYOUT_ASSERT(offsetof(nxt_js5_server_config, host) == 24, "nxt_js5_server_config layout drifted");
+NXT_JS5_LAYOUT_ASSERT(offsetof(nxt_js5_server_config, port) == 32, "nxt_js5_server_config layout drifted");
+#undef NXT_JS5_LAYOUT_ASSERT
+
+/* nxt_cache_open_live, against the caller's server config. Returns NULL on
+   failure (call nxt_last_error): an invalid config, or the connect/handshake. */
+NXT_API nxt_cache *nxt_cache_open_live_with_config(const nxt_js5_server_config *config);
+
+/* nxt_cache_enable_live_fallback, against the caller's server config. Returns
+   NXT_ERR_INVALID for a null handle or invalid config, NXT_ERR_IO if the
+   connect/handshake fails. Still a no-op (NXT_OK) on a live cache or a cache
+   whose fallback is already enabled; the config is validated either way. */
+NXT_API nxt_result nxt_cache_enable_live_fallback_with_config(nxt_cache *cache,
+                                                              const nxt_js5_server_config *config);
+
 /* Release a cache handle. Safe to pass NULL. */
 NXT_API void nxt_cache_close(nxt_cache *cache);
 
@@ -89,6 +159,13 @@ NXT_API void nxt_free(void *ptr);
    (caller frees with nxt_free). The CRCs are intended for the rs2client
    login packet (state 80's LM+24+106232..+106240 array). */
 NXT_API nxt_result nxt_fetch_master_crcs(uint32_t **out_crcs, size_t *out_count);
+
+/* nxt_fetch_master_crcs, against the caller's server config (see
+   nxt_js5_server_config): no jav_config request is made. NXT_ERR_INVALID for a
+   null output or an invalid config. On any failure with non-NULL outputs,
+   *out_crcs is NULL and *out_count is 0. */
+NXT_API nxt_result nxt_fetch_master_crcs_with_config(const nxt_js5_server_config *config,
+                                                     uint32_t **out_crcs, size_t *out_count);
 
 /* ---- Raw archive access ------------------------------------------------- */
 
