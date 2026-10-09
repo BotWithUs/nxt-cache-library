@@ -136,4 +136,11 @@ bool buildMapSquareClip(CacheSource &source, int squareX, int squareY,
 // placed in the world, independent of the clip path above.
 std::vector<LocSpawn> buildMapSquareLocs(CacheSource &source, int squareX, int squareY);
 
+// The same decode, also reporting whether the square exists: returns false
+// (outLocs cleared) when the square is absent from the cache, true otherwise. A
+// present square with no location file returns true with outLocs empty. This is
+// what lets the C ABI tell an absent square (NXT_ERR_NOT_FOUND) from an empty one.
+bool buildMapSquareLocs(CacheSource &source, int squareX, int squareY,
+                        std::vector<LocSpawn> &outLocs);
+
 }  // namespace maps

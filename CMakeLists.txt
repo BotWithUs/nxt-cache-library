@@ -370,3 +370,38 @@ if(NXTCACHE_BUILD_TESTS) # build-tests
 	set_tests_properties(varp PROPERTIES SKIP_RETURN_CODE 77)
 
 endif()
+# Target: nxtcache-mapsquare-locs-test
+if(NXTCACHE_BUILD_TESTS) # build-tests
+	set(nxtcache-mapsquare-locs-test_SOURCES
+		cmake.toml
+		"src/tests/test_mapsquare_locs.cpp"
+	)
+
+	add_executable(nxtcache-mapsquare-locs-test)
+
+	target_sources(nxtcache-mapsquare-locs-test PRIVATE ${nxtcache-mapsquare-locs-test_SOURCES})
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${nxtcache-mapsquare-locs-test_SOURCES})
+
+	target_compile_features(nxtcache-mapsquare-locs-test PRIVATE
+		cxx_std_20
+	)
+
+	target_include_directories(nxtcache-mapsquare-locs-test PRIVATE
+		src
+	)
+
+	target_link_libraries(nxtcache-mapsquare-locs-test PRIVATE
+		NXTCache
+	)
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT nxtcache-mapsquare-locs-test)
+	endif()
+
+	set(CMKR_TARGET nxtcache-mapsquare-locs-test)
+	enable_testing()
+	add_test(NAME mapsquare_locs COMMAND nxtcache-mapsquare-locs-test)
+	set_tests_properties(mapsquare_locs PROPERTIES SKIP_RETURN_CODE 77)
+
+endif()

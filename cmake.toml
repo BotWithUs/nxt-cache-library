@@ -158,3 +158,18 @@ enable_testing()
 add_test(NAME varp COMMAND nxtcache-varp-test)
 set_tests_properties(varp PROPERTIES SKIP_RETURN_CODE 77)
 """
+
+# nxt_get_mapsquare_locs against a real cache, cross-checked with the C++
+# maps::buildMapSquareLocs it wraps. Exit 77 = cache absent (SKIPPED).
+[target.nxtcache-mapsquare-locs-test]
+condition = "build-tests"
+type = "executable"
+sources = ["src/tests/test_mapsquare_locs.cpp"]
+include-directories = ["src"]
+link-libraries = ["NXTCache"]
+compile-features = ["cxx_std_20"]
+cmake-after = """
+enable_testing()
+add_test(NAME mapsquare_locs COMMAND nxtcache-mapsquare-locs-test)
+set_tests_properties(mapsquare_locs PROPERTIES SKIP_RETURN_CODE 77)
+"""

@@ -919,6 +919,69 @@ nxt_result nxt_get_mapsquare_clip_and_crossings(nxt_cache *handle, int square_x,
     }
 }
 
+nxt_result nxt_get_mapsquare_locs(nxt_cache *handle, int square_x, int square_y,
+                                  nxt_loc_spawn **out_locs, size_t *out_count)
+{
+    if (!handle || !out_locs || !out_count)
+    {
+        setError("invalid argument: null handle or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    *out_locs = nullptr;
+    *out_count = 0;
+    // The archive id keeps only 7 bits of x, and world tiles must fit the
+    // record's uint16 fields; anything outside would alias or truncate.
+    if (square_x < 0 || square_x >= 128 || square_y < 0 || square_y >= 1024)
+    {
+        setError("invalid argument: map square " + std::to_string(square_x) + ","
+                 + std::to_string(square_y) + " out of range");
+        return NXT_ERR_INVALID;
+    }
+    auto *c = reinterpret_cast<Cache *>(handle);
+    try
+    {
+        std::vector<maps::LocSpawn> locs;
+        if (!maps::buildMapSquareLocs(*c->source, square_x, square_y, locs))
+        {
+            setError("map square " + std::to_string(square_x) + "," + std::to_string(square_y)
+                     + " not present");
+            return NXT_ERR_NOT_FOUND;
+        }
+        if (locs.empty())
+        {
+            return NXT_OK;
+        }
+        auto *buf = static_cast<nxt_loc_spawn *>(std::malloc(locs.size() * sizeof(nxt_loc_spawn)));
+        if (!buf)
+        {
+            setError("malloc failed");
+            return NXT_ERR_INTERNAL;
+        }
+        // maps::LocSpawn is int-wide, so this is a field-wise narrowing copy, not
+        // a memcpy. The range check above keeps world_x/world_y in uint16; the
+        // decoder bounds plane (0..3), shape (5 bits) and rotation (2 bits).
+        for (size_t i = 0; i < locs.size(); i++)
+        {
+            const maps::LocSpawn &loc = locs[i];
+            buf[i].object_id = static_cast<int32_t>(loc.objectId);
+            buf[i].world_x = static_cast<uint16_t>(loc.worldX);
+            buf[i].world_y = static_cast<uint16_t>(loc.worldY);
+            buf[i].plane = static_cast<uint8_t>(loc.plane);
+            buf[i].shape = static_cast<uint8_t>(loc.shape);
+            buf[i].rotation = static_cast<uint8_t>(loc.rotation);
+            buf[i]._pad = 0;
+        }
+        *out_locs = buf;
+        *out_count = locs.size();
+        return NXT_OK;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("get_mapsquare_locs failed: ") + e.what());
+        return NXT_ERR_DECODE;
+    }
+}
+
 #define NXT_GETTER(suffix, T) \
     nxt_result nxt_get_##suffix##_json(nxt_cache *h, int id, char **out, size_t *len) \
     { return getJsonGeneric<T>(h, #suffix, id, out, len); }

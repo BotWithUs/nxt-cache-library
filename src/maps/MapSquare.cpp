@@ -847,18 +847,30 @@ bool buildMapSquareClip(CacheSource &source, int squareX, int squareY,
 std::vector<LocSpawn> buildMapSquareLocs(CacheSource &source, int squareX, int squareY)
 {
     std::vector<LocSpawn> result;
+    buildMapSquareLocs(source, squareX, squareY, result);
+    return result;
+}
+
+bool buildMapSquareLocs(CacheSource &source, int squareX, int squareY,
+                        std::vector<LocSpawn> &outLocs)
+{
+    outLocs.clear();
 
     int archiveId = (squareX & 0x7F) | (squareY << 7);
     Archive &archive = source.archive(kMapIndex, archiveId);
-    if (archive.id == -1 || archive.files.count(kLocationFile) == 0)
+    if (archive.id == -1)
     {
-        return result;
+        return false;
+    }
+    if (archive.files.count(kLocationFile) == 0)
+    {
+        return true;
     }
 
     RSBuffer buffer = archive.readFile(kLocationFile);
     if (buffer.buffer == nullptr || buffer.remaining() == 0)
     {
-        return result;
+        return true;
     }
 
     const int worldBaseX = squareX * MapSquareClip::SIZE;
@@ -866,13 +878,13 @@ std::vector<LocSpawn> buildMapSquareLocs(CacheSource &source, int squareX, int s
 
     std::vector<LocPlacement> placements =
         decodeLocationData(buffer.buffer + buffer.readPosition, buffer.remaining());
-    result.reserve(placements.size());
+    outLocs.reserve(placements.size());
     for (const LocPlacement &loc : placements)
     {
-        result.push_back({loc.objectId, worldBaseX + loc.localX, worldBaseY + loc.localY,
-                          loc.plane, loc.shape, loc.rotation});
+        outLocs.push_back({loc.objectId, worldBaseX + loc.localX, worldBaseY + loc.localY,
+                           loc.plane, loc.shape, loc.rotation});
     }
-    return result;
+    return true;
 }
 
 }  // namespace maps
