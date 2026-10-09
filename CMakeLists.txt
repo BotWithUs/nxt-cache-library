@@ -124,6 +124,8 @@ set(NXTCache_SOURCES
 	"src/config_types/ScriptVarType.h"
 	"src/config_types/SpriteType.cpp"
 	"src/config_types/SpriteType.h"
+	"src/config_types/StatType.cpp"
+	"src/config_types/StatType.h"
 	"src/config_types/Types.cpp"
 	"src/config_types/Types.h"
 	"src/config_types/VarPlayerType.cpp"
@@ -445,5 +447,42 @@ if(NXTCACHE_BUILD_TESTS) # build-tests
 	set(CMKR_TARGET nxtcache-js5-config-test)
 	enable_testing()
 	add_test(NAME js5_config COMMAND nxtcache-js5-config-test)
+
+endif()
+# Target: nxtcache-if-stats-test
+if(NXTCACHE_BUILD_TESTS) # build-tests
+	set(nxtcache-if-stats-test_SOURCES
+		cmake.toml
+		"src/tests/test_interfaces_stats.cpp"
+	)
+
+	add_executable(nxtcache-if-stats-test)
+
+	target_sources(nxtcache-if-stats-test PRIVATE ${nxtcache-if-stats-test_SOURCES})
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${nxtcache-if-stats-test_SOURCES})
+
+	target_compile_features(nxtcache-if-stats-test PRIVATE
+		cxx_std_20
+	)
+
+	target_include_directories(nxtcache-if-stats-test PRIVATE
+		src
+	)
+
+	target_link_libraries(nxtcache-if-stats-test PRIVATE
+		NXTCache
+		nlohmann_json::nlohmann_json
+	)
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT nxtcache-if-stats-test)
+	endif()
+
+	set(CMKR_TARGET nxtcache-if-stats-test)
+	enable_testing()
+	add_test(NAME if_stats_offline COMMAND nxtcache-if-stats-test --offline)
+	add_test(NAME if_stats COMMAND nxtcache-if-stats-test)
+	set_tests_properties(if_stats PROPERTIES SKIP_RETURN_CODE 77)
 
 endif()
