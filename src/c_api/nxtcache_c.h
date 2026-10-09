@@ -85,16 +85,28 @@ NXT_API nxt_result nxt_cache_enable_live_fallback_beta(nxt_cache *cache);
  *   - build_major > 0 and build_minor >= 0
  * The key is never written to nxt_last_error() or any log.
  *
+ * Versioning: struct_size must equal sizeof(nxt_js5_server_config) EXACTLY, on
+ * purpose. This is v1. A future v2 that appends fields will accept both its own
+ * size and the v1 size (40), so a caller built against this header keeps working
+ * unchanged; a size the library does not know is always rejected.
+ *
+ * Ownership: the strings behind key and host are copied during the call. The
+ * library keeps no pointer into the struct or its strings, so the caller may
+ * free or overwrite them as soon as the call returns.
+ *
  * Layout (64-bit): implicit padding at [4..7] and [34..39]; zero-initialise the
  * struct, then set struct_size. */
 typedef struct nxt_js5_server_config
 {
-    uint32_t    struct_size;  /* [0]  IN: caller sets sizeof(nxt_js5_server_config). */
-    const char *key;          /* [8]  jav_config param 29: the 32-char JS5 key. Required. */
+    uint32_t    struct_size;  /* [0]  IN: caller sets sizeof(nxt_js5_server_config); must
+                                      match exactly (see Versioning above). */
+    const char *key;          /* [8]  jav_config param 29: the 32-char JS5 key. Required.
+                                      Copied during the call. */
     int32_t     build_major;  /* [16] jav_config server_version. Required, > 0. */
     int32_t     build_minor;  /* [20] Usually 1. >= 0. */
     const char *host;         /* [24] JS5 content host (jav_config param 37, else 49).
-                                      NULL or "" = "content.runescape.com". */
+                                      NULL or "" = "content.runescape.com".
+                                      Copied during the call. */
     uint16_t    port;         /* [32] 0 = 43594. */
 } nxt_js5_server_config;
 

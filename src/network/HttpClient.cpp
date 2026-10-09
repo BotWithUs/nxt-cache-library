@@ -3,6 +3,7 @@
 
 #include <curl/curl.h>
 
+#include <atomic>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -24,6 +25,8 @@ void ensureCurlGlobalInit()
         }
     });
 }
+
+std::atomic<int> g_httpGetCalls{0};
 
 size_t writeCallback(char *ptr, size_t size, size_t nmemb, void *userdata)
 {
@@ -56,8 +59,14 @@ struct CurlHandle
 
 }  // namespace
 
+int httpGetCallCount()
+{
+    return g_httpGetCalls.load();
+}
+
 std::string httpGet(const std::string &host, const std::string &path, bool useTls)
 {
+    g_httpGetCalls++;
     ensureCurlGlobalInit();
 
     CurlHandle curl;
