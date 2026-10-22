@@ -46,10 +46,20 @@ public:
     int rotate180Animation{};
     int rotate90RightAnimation{};
     int rotate90LeftAnimation{};
+    // The first opcode decode() did not recognise and stopped at, or -1.
+    int unknownOpcode{-1};
 
     explicit NpcType() : id(-1), options(5) {}
 
     void decode(RSBuffer &buffer);
+
+private:
+    static constexpr int kNone16 = 0xFFFF;
+    static constexpr int kNone24 = 0xFFFFFF;
+
+    void decodeTransforms(RSBuffer &buffer, unsigned char opcode);
+    static void skipOverrideBlock(RSBuffer &buffer, bool isExtendedId);
+    static void skipOverrideGroups(RSBuffer &buffer, bool hasExtra);
 };
 
 class LocationType

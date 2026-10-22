@@ -409,6 +409,41 @@ if(NXTCACHE_BUILD_TESTS) # build-tests
 	set_tests_properties(mapsquare_locs PROPERTIES SKIP_RETURN_CODE 77)
 
 endif()
+# Target: nxtcache-npc-decode-test
+if(NXTCACHE_BUILD_TESTS) # build-tests
+	set(nxtcache-npc-decode-test_SOURCES
+		cmake.toml
+		"src/tests/test_npc_decode.cpp"
+	)
+
+	add_executable(nxtcache-npc-decode-test)
+
+	target_sources(nxtcache-npc-decode-test PRIVATE ${nxtcache-npc-decode-test_SOURCES})
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${nxtcache-npc-decode-test_SOURCES})
+
+	target_compile_features(nxtcache-npc-decode-test PRIVATE
+		cxx_std_20
+	)
+
+	target_include_directories(nxtcache-npc-decode-test PRIVATE
+		src
+	)
+
+	target_link_libraries(nxtcache-npc-decode-test PRIVATE
+		NXTCache
+	)
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT nxtcache-npc-decode-test)
+	endif()
+
+	set(CMKR_TARGET nxtcache-npc-decode-test)
+	enable_testing()
+	add_test(NAME npc_decode COMMAND nxtcache-npc-decode-test)
+	set_tests_properties(npc_decode PROPERTIES SKIP_RETURN_CODE 77)
+
+endif()
 # Target: nxtcache-js5-config-test
 if(NXTCACHE_BUILD_TESTS) # build-tests
 	set(nxtcache-js5-config-test_SOURCES

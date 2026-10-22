@@ -1,5 +1,7 @@
 #include "config_types/Types.h"
 
+#include <algorithm>
+
 void VarbitType::decode(RSBuffer &buffer)
 {
     while (true)
@@ -48,11 +50,19 @@ void NpcType::decode(RSBuffer &buffer)
         {
             buffer.skip(1);
         }
+        else if (opcode == 26 || opcode == 27)
+        {
+            buffer.skip(2);
+        }
         else if (opcode >= 30 && opcode <= 34)
         {
             options[opcode - 30] = buffer.readString();
         }
         else if (opcode == 12)
+        {
+            buffer.skip(1);
+        }
+        else if (opcode == 39)
         {
             buffer.skip(1);
         }
@@ -133,34 +143,9 @@ void NpcType::decode(RSBuffer &buffer)
         {
             rotation = buffer.readUnsignedShort();
         }
-        else if (opcode == 106 || opcode == 118)
+        else if (opcode == 106 || opcode == 118 || opcode == 187 || opcode == 188)
         {
-            varbitId = buffer.readUnsignedShort();
-            varpId = buffer.readUnsignedShort();
-            if (varbitId == 65535)
-            {
-                varbitId = -1;
-            }
-            if (varpId == 65535)
-            {
-                varpId = -1;
-            }
-            int defaultId = -1;
-            if (opcode == 118)
-            {
-                defaultId = buffer.readUnsignedShort();
-            }
-            int size = buffer.readSmart();
-            transforms.resize(size + 2);
-            for (int i = 0; i <= size; i++)
-            {
-                transforms[i] = buffer.readUnsignedShort();
-                if (transforms[i] == 65535)
-                {
-                    transforms[i] = -1;
-                }
-            }
-            transforms[size + 1] = defaultId;
+            decodeTransforms(buffer, opcode);
         }
         else if (opcode == 107)
         {
@@ -194,6 +179,10 @@ void NpcType::decode(RSBuffer &buffer)
                 buffer.skip(4);
             }
         }
+        else if (opcode == 123)
+        {
+            buffer.skip(2);
+        }
         else if (opcode == 125)
         {
             buffer.skip(1);
@@ -222,7 +211,7 @@ void NpcType::decode(RSBuffer &buffer)
         {
             buffer.skip(2);
         }
-        else if (opcode == 138)
+        else if (opcode == 138 || opcode == 139)
         {
             buffer.readSmartInt();
         }
@@ -283,7 +272,7 @@ void NpcType::decode(RSBuffer &buffer)
         {
             buffer.skip(2);
         }
-        else if (opcode == 178 || opcode == 182)
+        else if (opcode == 178 || opcode == 182 || opcode == 183)
         {
             buffer.skip(0);
         }
@@ -304,13 +293,17 @@ void NpcType::decode(RSBuffer &buffer)
         {
             buffer.skip(3);
         }
-        else if (opcode == 183 || opcode == 184)
+        else if (opcode == 184)
         {
             buffer.skip(1);
         }
         else if (opcode == 185)
         {
             buffer.skip(0);
+        }
+        else if (opcode == 186 || opcode == 189)
+        {
+            skipOverrideBlock(buffer, opcode == 189);
         }
         else if (opcode == 253)
         {
@@ -331,6 +324,104 @@ void NpcType::decode(RSBuffer &buffer)
                 {
                     params[key] = buffer.readInt();
                 }
+            }
+        }
+        else
+        {
+            // The client has no fallback for an unknown opcode, and its payload width is
+            // unknown, so stop rather than read the rest of the stream out of alignment.
+            unknownOpcode = opcode;
+            break;
+        }
+    }
+}
+
+void NpcType::decodeTransforms(RSBuffer &buffer, unsigned char opcode)
+{
+    // 187 and 188 are 106 and 118 with a 24-bit varbit id; 118 and 188 add a default id.
+    const bool isExtendedVarbit = opcode == 187 || opcode == 188;
+    const bool hasDefault = opcode == 118 || opcode == 188;
+    if (isExtendedVarbit)
+    {
+        varbitId = buffer.readMediumInt();
+        varbitId = varbitId == kNone24 ? -1 : varbitId;
+    }
+    else
+    {
+        varbitId = buffer.readUnsignedShort();
+        varbitId = varbitId == kNone16 ? -1 : varbitId;
+    }
+    varpId = buffer.readUnsignedShort();
+    varpId = varpId == kNone16 ? -1 : varpId;
+    int defaultId = -1;
+    if (hasDefault)
+    {
+        defaultId = buffer.readUnsignedShort();
+        defaultId = defaultId == kNone16 ? -1 : defaultId;
+    }
+    int size = buffer.readSmart();
+    transforms.resize(size + 2);
+    for (int i = 0; i <= size; i++)
+    {
+        transforms[i] = buffer.readUnsignedShort();
+        if (transforms[i] == kNone16)
+        {
+            transforms[i] = -1;
+        }
+    }
+    transforms[size + 1] = defaultId;
+}
+
+// Opcode 186 override block; 189 is the same block with a 24-bit leading id. None of
+// it is exposed, the walk only keeps the stream aligned.
+void NpcType::skipOverrideBlock(RSBuffer &buffer, bool isExtendedId)
+{
+    buffer.skip(2);
+    buffer.skip(isExtendedId ? 3 : 2);
+    buffer.skip(2);
+    const int flags = buffer.readUnsignedByte();
+    if ((flags & 0x1) != 0)
+    {
+        skipOverrideGroups(buffer, true);
+    }
+    if ((flags & 0x2) != 0)
+    {
+        skipOverrideGroups(buffer, false);
+    }
+    for (int mask = 0x4; mask <= 0x8; mask <<= 1)
+    {
+        if ((flags & mask) == 0)
+        {
+            continue;
+        }
+        int groups = buffer.readUnsignedByte();
+        for (int g = 0; g < groups; g++)
+        {
+            buffer.skip(1);
+            buffer.skip(buffer.readUnsignedByte() * 8);
+        }
+    }
+    if ((flags & 0x10) != 0)
+    {
+        buffer.skip(buffer.readUnsignedByte() * 8);
+    }
+    buffer.skip(2);
+}
+
+void NpcType::skipOverrideGroups(RSBuffer &buffer, bool hasExtra)
+{
+    int groups = buffer.readUnsignedByte();
+    for (int g = 0; g < groups; g++)
+    {
+        buffer.skip(1);
+        int entries = buffer.readUnsignedByte();
+        for (int e = 0; e < entries; e++)
+        {
+            buffer.skip(4);
+            buffer.readSmartInt();
+            if (hasExtra)
+            {
+                buffer.skip(std::min(static_cast<int>(buffer.readUnsignedByte()), 3));
             }
         }
     }
