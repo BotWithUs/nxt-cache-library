@@ -46,10 +46,18 @@ public:
     int rotate180Animation{};
     int rotate90RightAnimation{};
     int rotate90LeftAnimation{};
+    // The first opcode decode() did not recognise and stopped at, or -1.
+    int unknownOpcode{-1};
 
     explicit NpcType() : id(-1), options(5) {}
 
     void decode(RSBuffer &buffer);
+
+private:
+    static constexpr int kNone16 = 0xFFFF;
+    static constexpr int kNone24 = 0xFFFFFF;
+
+    void decodeTransforms(RSBuffer &buffer, unsigned char opcode);
 };
 
 class LocationType
@@ -74,10 +82,18 @@ public:
     int mapAreaId{-1};
     int cursors[6]{-1, -1, -1, -1, -1, -1};
     bool isMembers{};
+    // The first opcode decode() did not recognise and stopped at, or -1.
+    int unknownOpcode{-1};
 
     explicit LocationType() : id(-1), options(5) {}
 
     void decode(RSBuffer &buffer);
+
+private:
+    static constexpr int kNone16 = 0xFFFF;
+    static constexpr int kNone24 = 0xFFFFFF;
+
+    void decodeTransforms(RSBuffer &buffer, unsigned char opcode);
 };
 
 class ItemType

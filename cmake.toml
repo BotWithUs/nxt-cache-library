@@ -174,6 +174,21 @@ add_test(NAME mapsquare_locs COMMAND nxtcache-mapsquare-locs-test)
 set_tests_properties(mapsquare_locs PROPERTIES SKIP_RETURN_CODE 77)
 """
 
+# Every npc and loc config in a real cache must end on opcode 0 with no unknown opcode.
+# Exit 77 = cache absent (SKIPPED).
+[target.nxtcache-config-decode-test]
+condition = "build-tests"
+type = "executable"
+sources = ["src/tests/test_config_decode.cpp"]
+include-directories = ["src"]
+link-libraries = ["NXTCache"]
+compile-features = ["cxx_std_20"]
+cmake-after = """
+enable_testing()
+add_test(NAME config_decode COMMAND nxtcache-config-decode-test)
+set_tests_properties(config_decode PROPERTIES SKIP_RETURN_CODE 77)
+"""
+
 # Caller-supplied JS5 server config (the *_with_config C entry points): argument
 # validation, config conversion and the handshake bytes, against a loopback
 # fake server (no network, no cache).
