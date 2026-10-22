@@ -1,9 +1,9 @@
-// Decodes every NPC config in a real cache and requires each one to end exactly on
-// its terminating opcode 0 with no unknown opcode. A decoder that reads the wrong
-// width for an opcode drifts out of alignment, and the drift shows up here as an
-// early stop or an unknown opcode instead of as silently empty names and options.
+// Decodes every npc and loc config in a real cache and requires each one to end
+// exactly on its terminating opcode 0 with no unknown opcode. A decoder that reads
+// the wrong width for an opcode drifts out of alignment, and the drift shows up here
+// as an early stop or an unknown opcode instead of as silently wrong fields.
 //
-//   nxtcache-npc-decode-test [cache-dir]
+//   nxtcache-config-decode-test [cache-dir]
 //
 // cache-dir defaults to $NXTCACHE_TEST_CACHE, then C:\ProgramData\Jagex\RuneScape.
 // Exit codes: 0 all checks passed, 1 a check failed, 77 cache absent (SKIP).
@@ -27,6 +27,8 @@ namespace
 constexpr int kExitSkip = 77;
 constexpr int kNpcIndex = 18;
 constexpr int kNpcShift = 7;
+constexpr int kLocIndex = 16;
+constexpr int kLocShift = 8;
 constexpr int kMaxReported = 20;
 constexpr int kHansId = 0;
 
@@ -55,7 +57,8 @@ std::string cachePathFrom(int argc, char **argv)
 }
 
 // Empty string when the config decoded cleanly, otherwise why it did not.
-std::string decodeProblem(RSBuffer &buffer, NpcType &type)
+template<typename T>
+std::string decodeProblem(RSBuffer &buffer, T &type)
 {
     type.decode(buffer);
     if (type.unknownOpcode != -1)
@@ -71,13 +74,14 @@ std::string decodeProblem(RSBuffer &buffer, NpcType &type)
     return {};
 }
 
-void sweepAll(RSCache &cache)
+template<typename T>
+void sweepAll(RSCache &cache, const char *name, int index, int shift)
 {
     int decoded = 0;
     int failed = 0;
-    for (int archiveId : cache.archiveIds(kNpcIndex))
+    for (int archiveId : cache.archiveIds(index))
     {
-        Archive &archive = cache.archive(kNpcIndex, archiveId);
+        Archive &archive = cache.archive(index, archiveId);
         if (archive.id == -1)
         {
             continue;
@@ -89,8 +93,8 @@ void sweepAll(RSCache &cache)
             {
                 continue;
             }
-            NpcType type;
-            type.id = (archiveId << kNpcShift) | fileId;
+            T type;
+            type.id = (archiveId << shift) | fileId;
             const std::string problem = decodeProblem(buffer, type);
             if (problem.empty())
             {
@@ -99,13 +103,13 @@ void sweepAll(RSCache &cache)
             }
             if (failed++ < kMaxReported)
             {
-                std::printf("    npc %d: %s\n", type.id, problem.c_str());
+                std::printf("    %s %d: %s\n", name, type.id, problem.c_str());
             }
         }
     }
-    std::printf("  npc: decoded %d, failed %d\n", decoded, failed);
-    check(decoded > 0, "at least one npc decoded");
-    check(failed == 0, "every npc ends on opcode 0 with no unknown opcode");
+    std::printf("  %s: decoded %d, failed %d\n", name, decoded, failed);
+    check(decoded > 0, std::string("at least one ") + name + " decoded");
+    check(failed == 0, std::string("every ") + name + " ends on opcode 0 with no unknown opcode");
 }
 
 // Hans carries opcode 27 ahead of his name and options, so a decoder without it
@@ -126,15 +130,17 @@ void checkHans(RSCache &cache)
 int main(int argc, char **argv)
 {
     const std::string path = cachePathFrom(argc, argv);
-    if (!std::filesystem::exists(std::filesystem::path(path) / "js5-18.jcache"))
+    const std::filesystem::path dir(path);
+    if (!std::filesystem::exists(dir / "js5-18.jcache") || !std::filesystem::exists(dir / "js5-16.jcache"))
     {
-        std::printf("SKIP: no npc cache at %s\n", path.c_str());
+        std::printf("SKIP: no npc/loc cache at %s\n", path.c_str());
         return kExitSkip;
     }
     RSCache cache(path);
-    std::printf("npc decode against %s\n", path.c_str());
-    sweepAll(cache);
+    std::printf("config decode against %s\n", path.c_str());
+    sweepAll<NpcType>(cache, "npc", kNpcIndex, kNpcShift);
     checkHans(cache);
+    sweepAll<LocationType>(cache, "loc", kLocIndex, kLocShift);
     std::printf("%s (%d failure(s))\n", failures == 0 ? "PASS" : "FAIL", failures);
     return failures == 0 ? 0 : 1;
 }
