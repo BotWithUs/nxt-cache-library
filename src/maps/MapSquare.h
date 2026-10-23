@@ -112,7 +112,25 @@ struct DefCache
 {
     std::unordered_map<int, LocationType> locDefs;
     std::unordered_map<int, bool> waterOverlays;
+    // Offline var values a multiloc's transform index is read from: the value a
+    // player who has never had the var set sees. Keyed by varbit / varp id.
+    std::unordered_map<int, int> varbitValues;
+    std::unordered_map<int, int> varpValues;
 };
+
+// The loc a placement actually presents: for a multiloc (a def with a transform
+// table) the transform its varbit, else its varp, selects; otherwise the def
+// itself. Resolution follows the client: an index inside the table selects that
+// entry, any other index (including -1, no var configured) selects the table's
+// last slot, which holds the explicit default id. A selected id of -1 means the
+// loc is absent at that var value, and the result is nullptr.
+//
+// The bake has no player state, so the var value is the one a fresh player sees:
+// a varp's client default (VarPlayerType::resolveDefault; 0 when the type has no
+// integer default) and, for a varbit, that varp value's bit range. A varbit that
+// is not in the player domain reads 0.
+const LocationType *resolveActiveLoc(CacheSource &source, DefCache &defs,
+                                     const LocationType &base);
 
 // Decodes terrain (file 3) and locations (file 0) for the map square at
 // (squareX, squareY), resolves referenced location defs (index 16) and water
@@ -122,8 +140,12 @@ struct DefCache
 //
 // When outCrossings is non-null it is cleared then filled with one Crossing per
 // interactable scenery crossing (door / climb-over / ladder-stair / agility) found
-// in the square — the clip-only path (outCrossings == nullptr) is byte-for-byte
-// unchanged.
+// in the square. Collision (walls, footprint, solidity, interactType) comes from
+// the placed def; whether a placement is a crossing, and which option it clicks,
+// comes from resolveActiveLoc's active variant, because a multiloc's options live
+// on its transforms. Crossing::objectId stays the placed (base) id, which is the
+// id the server knows the loc by. The clip-only path (outCrossings == nullptr)
+// writes the same clip grid as the path that collects crossings.
 bool buildMapSquareClip(CacheSource &source, int squareX, int squareY,
                         DefCache &defs, MapSquareClip &outClip,
                         std::vector<Crossing> *outCrossings = nullptr);
