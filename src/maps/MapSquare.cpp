@@ -4,6 +4,7 @@
 #include "core/CacheSource.h"
 #include "core/RSBuffer.h"
 #include "core/TypeMappings.h"
+#include "config_types/VarPlayerType.h"
 
 #include <algorithm>
 #include <cctype>
@@ -20,6 +21,8 @@ constexpr int kLocationFile = 0;
 constexpr int kAgilityCursor = 181;
 constexpr uint8_t kTileBlocked = 0x1;
 constexpr uint8_t kTileBridge = 0x2;
+// VarbitType::domainType of a varbit packed into a player var (varp).
+constexpr int kVarDomainPlayer = 0;
 
 struct LocPlacement
 {
@@ -365,7 +368,7 @@ bool hasAnyOption(const LocationType &loc)
             return true;
         }
     }
-    return loc.varbitId != -1;
+    return false;
 }
 
 bool isClimbOver(const std::string &opt)
@@ -440,7 +443,7 @@ bool hasAgilityCursor(const LocationType &loc)
 }
 
 // 0xFF when no interactive option slot applies — the crossing carries no clickable
-// option (e.g. a varbit-only door). Otherwise the 0-based option slot.
+// option. Otherwise the 0-based option slot.
 constexpr uint8_t kNoOption = 0xFF;
 
 uint8_t firstOptionIndex(const LocationType &loc)
@@ -610,6 +613,73 @@ const LocationType *locDef(CacheSource &source, DefCache &defs, int objectId)
     return &inserted.first->second;
 }
 
+// The value an unset varp reads as: the client's default rule, narrowed to the
+// int a transform index is. A varp with no type, a string type, or no def reads 0.
+int defaultVarpValue(CacheSource &source, DefCache &defs, int varpId)
+{
+    auto it = defs.varpValues.find(varpId);
+    if (it != defs.varpValues.end())
+    {
+        return it->second;
+    }
+
+    int value = 0;
+    const nxt::TypeMapping &mapping = nxt::typeDefaults().at("varp");
+    Archive &archive = source.archive(mapping.indexId, mapping.archiveId);
+    // Membership first: Archive::readFile inserts a default header for an unknown id.
+    if (archive.id != -1 && archive.fileIds.count(varpId) != 0)
+    {
+        RSBuffer buffer = archive.readFile(varpId);
+        const auto *bytes = reinterpret_cast<const uint8_t *>(buffer.buffer);
+        VarPlayerType type{};
+        type.id = varpId;
+        if (bytes != nullptr && type.decodeStrict(bytes + buffer.readPosition, buffer.remaining()))
+        {
+            const VarpDefault def = type.resolveDefault();
+            if (def.rule != VarpDefaultRule::None && def.text == nullptr)
+            {
+                value = static_cast<int>(def.value);
+            }
+        }
+    }
+    defs.varpValues.emplace(varpId, value);
+    return value;
+}
+
+// A varbit's value for a fresh player: its bit range of the owning varp's default.
+int defaultVarbitValue(CacheSource &source, DefCache &defs, int varbitId)
+{
+    auto it = defs.varbitValues.find(varbitId);
+    if (it != defs.varbitValues.end())
+    {
+        return it->second;
+    }
+
+    int value = 0;
+    const nxt::TypeMapping &mapping = nxt::typeDefaults().at("varbit");
+    Archive &archive = source.archive(mapping.indexId, mapping.archiveId);
+    if (archive.id != -1 && archive.fileIds.count(varbitId) != 0)
+    {
+        RSBuffer buffer = archive.readFile(varbitId);
+        VarbitType varbit{};
+        varbit.id = varbitId;
+        if (buffer.buffer != nullptr && buffer.remaining() > 0)
+        {
+            varbit.decode(buffer);
+        }
+        const bool isRangeValid = varbit.lsb >= 0 && varbit.msb >= varbit.lsb && varbit.msb <= 31;
+        if (varbit.domainType == kVarDomainPlayer && isRangeValid)
+        {
+            const auto raw = static_cast<uint32_t>(defaultVarpValue(source, defs, varbit.varId));
+            const uint32_t width = static_cast<uint32_t>(varbit.msb - varbit.lsb) + 1u;
+            const uint32_t mask = width >= 32u ? 0xFFFFFFFFu : ((1u << width) - 1u);
+            value = static_cast<int>((raw >> varbit.lsb) & mask);
+        }
+    }
+    defs.varbitValues.emplace(varbitId, value);
+    return value;
+}
+
 bool isWaterOverlay(CacheSource &source, DefCache &defs, int overlayId)
 {
     auto it = defs.waterOverlays.find(overlayId);
@@ -662,50 +732,68 @@ void applyTerrain(MapSquareClip &clip, const TerrainData &terrain)
     }
 }
 
-void applyPlacement(MapSquareClip &clip, const LocationType &locType,
-                    const LocPlacement &loc, int effectivePlane,
-                    int worldBaseX, int worldBaseY, std::vector<Crossing> *outCrossings)
+// Option-driven classification for one placement: agility / climb-over /
+// plane-change markers and their crossings. `placed` supplies the footprint,
+// `active` (the variant the player sees) the options and cursors.
+void applyInteractions(MapSquareClip &clip, const LocationType &placed,
+                       const LocationType &active, const LocPlacement &loc, int effectivePlane,
+                       int worldBaseX, int worldBaseY, std::vector<Crossing> *outCrossings)
 {
-    if (hasAgilityCursor(locType))
+    if (hasAgilityCursor(active))
     {
         setClip(clip, effectivePlane, loc.localX, loc.localY, CLIP_AGILITY_SHORTCUT);
-        emitCrossing(outCrossings, CrossingKind::Agility, locType, loc, effectivePlane,
-                     worldBaseX, worldBaseY, agilityOptionIndex(locType), 0);
+        emitCrossing(outCrossings, CrossingKind::Agility, placed, loc, effectivePlane,
+                     worldBaseX, worldBaseY, agilityOptionIndex(active), 0);
     }
-    else if (hasClimbOverOption(locType))
+    else if (hasClimbOverOption(active))
     {
         setClip(clip, effectivePlane, loc.localX, loc.localY, CLIP_CLIMBOVER);
-        emitCrossing(outCrossings, CrossingKind::ClimbOver, locType, loc, effectivePlane,
-                     worldBaseX, worldBaseY, climbOverOptionIndex(locType), 0);
+        emitCrossing(outCrossings, CrossingKind::ClimbOver, placed, loc, effectivePlane,
+                     worldBaseX, worldBaseY, climbOverOptionIndex(active), 0);
     }
-    if (hasPlaneChangeOption(locType))
+    if (hasPlaneChangeOption(active))
     {
         setClip(clip, effectivePlane, loc.localX, loc.localY, CLIP_PLANE_CHANGE);
-        emitCrossing(outCrossings, CrossingKind::PlaneChange, locType, loc, effectivePlane,
-                     worldBaseX, worldBaseY, planeChangeOptionIndex(locType),
-                     classifyClimbDir(locType));
+        emitCrossing(outCrossings, CrossingKind::PlaneChange, placed, loc, effectivePlane,
+                     worldBaseX, worldBaseY, planeChangeOptionIndex(active),
+                     classifyClimbDir(active));
+    }
+}
+
+// `placed` is the def the map names; `active` is resolveActiveLoc's variant, or
+// nullptr when the multiloc is absent at the current var value. Collision always
+// comes from `placed`; options (and so crossings) only from `active`.
+void applyPlacement(MapSquareClip &clip, const LocationType &placed,
+                    const LocationType *active, const LocPlacement &loc, int effectivePlane,
+                    int worldBaseX, int worldBaseY, std::vector<Crossing> *outCrossings)
+{
+    if (active != nullptr)
+    {
+        applyInteractions(clip, placed, *active, loc, effectivePlane,
+                          worldBaseX, worldBaseY, outCrossings);
     }
 
-    if (locType.solidType == 0)
+    if (placed.solidType == 0)
     {
         return;
     }
 
-    bool isDoor = locType.interactType > 0 && hasAnyOption(locType);
+    const bool isDoor = placed.interactType > 0 && active != nullptr && hasAnyOption(*active);
+    const uint8_t doorOption = active != nullptr ? firstOptionIndex(*active) : kNoOption;
     if (loc.shape >= 0 && loc.shape <= 3)
     {
         addWallCollision(clip, effectivePlane, loc.localX, loc.localY, loc.shape, loc.rotation);
         if (isDoor)
         {
             setClip(clip, effectivePlane, loc.localX, loc.localY, CLIP_DOOR);
-            emitCrossing(outCrossings, CrossingKind::Door, locType, loc, effectivePlane,
-                         worldBaseX, worldBaseY, firstOptionIndex(locType), 0);
+            emitCrossing(outCrossings, CrossingKind::Door, placed, loc, effectivePlane,
+                         worldBaseX, worldBaseY, doorOption, 0);
         }
     }
     else if (loc.shape >= 9 && loc.shape <= 21)
     {
-        int sizeX = locType.sizeX > 0 ? locType.sizeX : 1;
-        int sizeY = locType.sizeY > 0 ? locType.sizeY : 1;
+        int sizeX = placed.sizeX > 0 ? placed.sizeX : 1;
+        int sizeY = placed.sizeY > 0 ? placed.sizeY : 1;
         if (loc.rotation == 1 || loc.rotation == 3)
         {
             std::swap(sizeX, sizeY);
@@ -714,11 +802,11 @@ void applyPlacement(MapSquareClip &clip, const LocationType &locType,
         if (loc.shape == 9 && isDoor)
         {
             setClip(clip, effectivePlane, loc.localX, loc.localY, CLIP_DOOR);
-            emitCrossing(outCrossings, CrossingKind::Door, locType, loc, effectivePlane,
-                         worldBaseX, worldBaseY, firstOptionIndex(locType), 0);
+            emitCrossing(outCrossings, CrossingKind::Door, placed, loc, effectivePlane,
+                         worldBaseX, worldBaseY, doorOption, 0);
         }
     }
-    else if (loc.shape == 22 && locType.solidType == 1)
+    else if (loc.shape == 22 && placed.solidType == 1)
     {
         setClip(clip, effectivePlane, loc.localX, loc.localY, CLIP_FLOOR_DECORATION);
     }
@@ -745,7 +833,9 @@ void applyLocations(CacheSource &source, DefCache &defs, MapSquareClip &clip,
         {
             continue;
         }
-        applyPlacement(clip, *locType, loc, effectivePlane, worldBaseX, worldBaseY, outCrossings);
+        const LocationType *active = resolveActiveLoc(source, defs, *locType);
+        applyPlacement(clip, *locType, active, loc, effectivePlane,
+                       worldBaseX, worldBaseY, outCrossings);
     }
 }
 
@@ -786,6 +876,34 @@ void computePlaneMask(MapSquareClip &clip)
 }
 
 }  // namespace
+
+const LocationType *resolveActiveLoc(CacheSource &source, DefCache &defs,
+                                     const LocationType &base)
+{
+    if (base.transforms.empty())
+    {
+        return &base;
+    }
+
+    int index = -1;
+    if (base.varbitId != -1)
+    {
+        index = defaultVarbitValue(source, defs, base.varbitId);
+    }
+    else if (base.varpId != -1)
+    {
+        index = defaultVarpValue(source, defs, base.varpId);
+    }
+
+    const int count = static_cast<int>(base.transforms.size());
+    const bool isInside = index >= 0 && index < count;
+    const int activeId = base.transforms[static_cast<std::size_t>(isInside ? index : count - 1)];
+    if (activeId < 0)
+    {
+        return nullptr;
+    }
+    return locDef(source, defs, activeId);
+}
 
 bool buildMapSquareClip(CacheSource &source, int squareX, int squareY,
                         DefCache &defs, MapSquareClip &outClip,
