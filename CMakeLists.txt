@@ -414,6 +414,42 @@ if(NXTCACHE_BUILD_TESTS) # build-tests
 	set_tests_properties(gameval PROPERTIES SKIP_RETURN_CODE 77)
 
 endif()
+# Target: nxtcache-gameval-c-api-test
+if(NXTCACHE_BUILD_TESTS AND NXTCACHE_BUILD_DUMPER) # build-tests-with-dumper
+	set(nxtcache-gameval-c-api-test_SOURCES
+		cmake.toml
+		"src/tests/test_gameval_c_api.cpp"
+	)
+
+	add_executable(nxtcache-gameval-c-api-test)
+
+	target_sources(nxtcache-gameval-c-api-test PRIVATE ${nxtcache-gameval-c-api-test_SOURCES})
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${nxtcache-gameval-c-api-test_SOURCES})
+
+	target_compile_features(nxtcache-gameval-c-api-test PRIVATE
+		cxx_std_20
+	)
+
+	target_include_directories(nxtcache-gameval-c-api-test PRIVATE
+		src
+	)
+
+	target_link_libraries(nxtcache-gameval-c-api-test PRIVATE
+		NXTCache
+		unofficial::sqlite3::sqlite3
+	)
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT nxtcache-gameval-c-api-test)
+	endif()
+
+	set(CMKR_TARGET nxtcache-gameval-c-api-test)
+	enable_testing()
+	add_test(NAME gameval_c_api COMMAND nxtcache-gameval-c-api-test $<TARGET_FILE:nxtcache-dumper>)
+	set_tests_properties(gameval_c_api PROPERTIES SKIP_RETURN_CODE 77)
+
+endif()
 # Target: nxtcache-mapsquare-locs-test
 if(NXTCACHE_BUILD_TESTS) # build-tests
 	set(nxtcache-mapsquare-locs-test_SOURCES

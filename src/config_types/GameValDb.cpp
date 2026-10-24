@@ -2,9 +2,11 @@
 
 #include "config_types/GameVal.h"
 #include "config_types/Types.h"
+#include "network/Js5Config.h"
 
 #include <sqlite3.h>
 
+#include <chrono>
 #include <ctime>
 #include <map>
 #include <memory>
@@ -18,6 +20,40 @@ namespace {
 
 constexpr int kConfigIndex = 2;
 constexpr int kVarbitArchive = 69;
+
+constexpr const char *kNoGameValsMessage = "cache has no gameval archives (index 67 absent or empty)";
+
+std::string utf8(const std::filesystem::path &p)
+{
+    const std::u8string s = p.u8string();
+    return std::string(s.begin(), s.end());
+}
+
+std::string formatLocal(std::time_t t)
+{
+    std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
+    return buf;
+}
+
+// "" when the file is missing or unreadable.
+std::string fileMtime(const std::filesystem::path &file)
+{
+    std::error_code ec;
+    const auto ftime = std::filesystem::last_write_time(file, ec);
+    if (ec)
+    {
+        return {};
+    }
+    const auto sys = std::chrono::clock_cast<std::chrono::system_clock>(ftime);
+    return formatLocal(std::chrono::system_clock::to_time_t(sys));
+}
 
 // One table as it lands in the database: an etype and its rows, sorted by id.
 struct EtypeTable
@@ -60,7 +96,7 @@ std::vector<EtypeTable> collectTables(CacheSource &cache, GameValDbResult &resul
     std::vector<int> archiveIds = cache.archiveIds(kGameValIndex);
     if (archiveIds.empty())
     {
-        throw std::runtime_error("cache has no gameval archives (index 67 absent or empty)");
+        throw std::runtime_error(kNoGameValsMessage);
     }
     std::vector<EtypeTable> tables;
     for (int aid : archiveIds)
@@ -185,7 +221,7 @@ void exec(sqlite3 *db, const char *sql)
     {
         std::string msg = err != nullptr ? err : sqlite3_errmsg(db);
         sqlite3_free(err);
-        throw std::runtime_error(std::string("sqlite: ") + msg + " in: " + sql);
+        throw GameValDbIoError(std::string("sqlite: ") + msg + " in: " + sql);
     }
 }
 
@@ -194,7 +230,7 @@ StmtPtr prepare(sqlite3 *db, const char *sql)
     sqlite3_stmt *stmt = nullptr;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
     {
-        throw std::runtime_error(std::string("sqlite prepare: ") + sqlite3_errmsg(db));
+        throw GameValDbIoError(std::string("sqlite prepare: ") + sqlite3_errmsg(db));
     }
     return StmtPtr(stmt);
 }
@@ -206,7 +242,7 @@ void insertPair(sqlite3 *db, sqlite3_stmt *stmt, const std::string &a, const std
     sqlite3_bind_text(stmt, 2, b.c_str(), static_cast<int>(b.size()), SQLITE_TRANSIENT);
     if (sqlite3_step(stmt) != SQLITE_DONE)
     {
-        throw std::runtime_error(std::string("sqlite insert: ") + sqlite3_errmsg(db));
+        throw GameValDbIoError(std::string("sqlite insert: ") + sqlite3_errmsg(db));
     }
 }
 
@@ -222,7 +258,7 @@ GameValDbTypeStats insertTable(sqlite3 *db, sqlite3_stmt *stmt, const EtypeTable
         sqlite3_bind_text(stmt, 3, e.name.c_str(), static_cast<int>(e.name.size()), SQLITE_STATIC);
         if (sqlite3_step(stmt) != SQLITE_DONE)
         {
-            throw std::runtime_error("sqlite insert " + t.etype + "/" + std::to_string(e.id) +
+            throw GameValDbIoError("sqlite insert " + t.etype + "/" + std::to_string(e.id) +
                                      ": " + sqlite3_errmsg(db));
         }
         stats.duplicateNames += seen.emplace(e.name, e.id).second ? 0 : 1;
@@ -232,16 +268,7 @@ GameValDbTypeStats insertTable(sqlite3 *db, sqlite3_stmt *stmt, const EtypeTable
 
 std::string localTimestamp()
 {
-    std::time_t now = std::time(nullptr);
-    std::tm tm{};
-#ifdef _WIN32
-    localtime_s(&tm, &now);
-#else
-    localtime_r(&now, &tm);
-#endif
-    char buf[32];
-    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
-    return buf;
+    return formatLocal(std::time(nullptr));
 }
 
 constexpr const char *kSchemaSql = R"(
@@ -265,7 +292,7 @@ void writeDb(const std::filesystem::path &file, const std::vector<EtypeTable> &t
     DbPtr db(raw);
     if (rc != SQLITE_OK)
     {
-        throw std::runtime_error("sqlite open " + file.string() + ": " +
+        throw GameValDbIoError("sqlite open " + utf8(file) + ": " +
                                  (raw != nullptr ? sqlite3_errmsg(raw) : "out of memory"));
     }
     // A scratch file renamed into place only when complete: no journal needed.
@@ -311,6 +338,67 @@ struct ScratchFile
 
 }  // namespace
 
+std::optional<int> gameValIndexVersion(CacheSource &cache)
+{
+    if (cache.archiveIds(kGameValIndex).empty())
+    {
+        return std::nullopt;
+    }
+    return cache.indexVersion(kGameValIndex);
+}
+
+std::vector<std::pair<std::string, std::string>> gameValSourceMeta(CacheSource &cache,
+                                                                   const GameValSourceInfo &info)
+{
+    const std::optional<int> indexVersion = gameValIndexVersion(cache);
+    if (!indexVersion)
+    {
+        throw std::runtime_error(kNoGameValsMessage);
+    }
+    std::vector<std::pair<std::string, std::string>> meta;
+    meta.emplace_back("generator", info.generator);
+    if (info.liveConfig != nullptr)
+    {
+        meta.emplace_back("source", info.isBeta ? "beta" : "live");
+        meta.emplace_back("cache", info.liveConfig->endpoint);
+        meta.emplace_back("build", std::to_string(info.liveConfig->serverVersionMajor));
+        meta.emplace_back("index_version", std::to_string(*indexVersion));
+        return meta;
+    }
+    std::string source = "local";
+    if (info.hasFallback)
+    {
+        source += info.isBeta ? "+beta-fallback" : "+live-fallback";
+    }
+    meta.emplace_back("source", source);
+    meta.emplace_back("cache", utf8(std::filesystem::absolute(info.cacheDir)));
+    meta.emplace_back("index_version", std::to_string(*indexVersion));
+    const std::string mtime = fileMtime(info.cacheDir / "js5-67.jcache");
+    if (!mtime.empty())
+    {
+        meta.emplace_back("source_mtime", mtime);
+    }
+    return meta;
+}
+
+bool isGameValMetaKeyReserved(std::string_view key)
+{
+    constexpr std::string_view kReserved[] = {
+        // written by buildGameValDb
+        "schema_version", "built", "groups", "rows", "bit_table_check",
+        // written by gameValSourceMeta
+        "generator", "source", "cache", "build", "index_version", "source_mtime",
+    };
+    for (std::string_view r : kReserved)
+    {
+        if (key == r)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 GameValDbResult buildGameValDb(CacheSource &cache, const std::filesystem::path &outFile,
                                const std::vector<std::pair<std::string, std::string>> &extraMeta)
 {
@@ -334,10 +422,23 @@ GameValDbResult buildGameValDb(CacheSource &cache, const std::filesystem::path &
         meta.push_back(kv);
     }
 
-    ScratchFile scratch{outFile.string() + ".partial"};
-    std::filesystem::remove(scratch.path);
+    // A stale scratch file from a crashed build goes first; a remove that fails
+    // means the scratch path is held open (another build?), so stop there.
+    std::filesystem::path scratchPath = outFile;
+    scratchPath += ".partial";
+    std::error_code ec;
+    std::filesystem::remove(scratchPath, ec);
+    if (ec)
+    {
+        throw GameValDbIoError("cannot clear " + utf8(scratchPath) + ": " + ec.message());
+    }
+    ScratchFile scratch{scratchPath};
     writeDb(scratch.path, tables, meta, result);
-    std::filesystem::rename(scratch.path, outFile);
+    std::filesystem::rename(scratch.path, outFile, ec);
+    if (ec)
+    {
+        throw GameValDbIoError("cannot replace " + utf8(outFile) + ": " + ec.message());
+    }
     scratch.isReleased = true;
     return result;
 }

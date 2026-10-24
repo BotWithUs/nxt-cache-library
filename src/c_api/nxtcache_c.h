@@ -208,6 +208,100 @@ NXT_API nxt_result nxt_get_gameval_group_json(nxt_cache *cache, const char *grou
    NUL-terminated UTF-8; free *out_json with nxt_free. */
 NXT_API nxt_result nxt_dump_gamevals_json(nxt_cache *cache, char **out_json, size_t *out_len);
 
+/* ---- gameval.sqlite ------------------------------------------------------
+ *
+ * Bake the gameval name index the Java host reads (gameval.sqlite, schema v1)
+ * from any cache handle, and probe cheaply whether a baked one is still current.
+ * These produce the same database as `nxtcache-dumper --type gameval --sqlite`
+ * from the same cache: identical gameval rows, schema and meta keys (only the
+ * values of meta.generator and meta.built differ).
+ *
+ * Intended use (the host's startup):
+ *     open the local cache [+ enable the live fallback]
+ *     rc = nxt_gameval_index_version(cache, &v)
+ *     rc == NXT_OK and the existing DB's meta.index_version == decimal(v)
+ *         -> keep the DB
+ *     rc == NXT_OK otherwise -> close any reader of the DB, nxt_build_gameval_db
+ *     rc == NXT_ERR_NOT_FOUND -> this cache has no gamevals; keep whatever DB exists
+ *
+ * "Index 67 absent" is one predicate shared by both calls: index 67's reference
+ * table lists no archives. That is a cache with no js5-67.jcache, an empty one,
+ * or one from before 951-1, after the live fallback if it is enabled. Both calls
+ * return NXT_ERR_NOT_FOUND for it and for nothing else. A cache that lacks
+ * js5-67.jcache is only read: no file is created in the cache directory.
+ *
+ * Enable the live fallback, if wanted, BEFORE either call. Both load index 67's
+ * reference table into the handle, and a table loaded without the fallback is
+ * not re-read when the fallback is enabled later.
+ *
+ * Threading: the same as every other export. A handle must not be used by two
+ * threads at once, and nxt_last_error() is per thread. Calls on different
+ * handles may run concurrently, except two builds to the same out_path. */
+
+/* Index 67's reference-table version: the exact value nxt_build_gameval_db
+   writes as meta.index_version (meta stores it as a decimal string with no
+   padding: "-12" or "1729"). Decodes nothing, and never reads an archive.
+
+   Returns:
+     NXT_OK            *out_version is the version.
+     NXT_ERR_NOT_FOUND index 67 is absent (see above). *out_version is 0.
+     NXT_ERR_INVALID   cache or out_version is NULL.
+     NXT_ERR_IO        reading the reference table threw (for example, a live
+                       source that lost its connection).
+   On any non-OK return with a non-NULL out_version, *out_version is 0. The
+   reason is in nxt_last_error(). */
+NXT_API nxt_result nxt_gameval_index_version(nxt_cache *cache, int32_t *out_version);
+
+/* Decode every index-67 archive of `cache`, check the bit tables against the
+   varbit configs (index 2 archive 69) when the cache has them, and write
+   gameval.sqlite to out_path.
+
+   out_path        UTF-8, not NULL or empty. Its directory must exist.
+   extra_meta_json NULL, or a UTF-8 JSON object whose values are all strings,
+                   e.g. {"host_version":"1.4.2"}. Each pair becomes one meta row.
+                   The keys the library writes are reserved and are rejected:
+                   schema_version, built, groups, rows, bit_table_check,
+                   generator, source, cache, build, index_version, source_mtime.
+
+   The library writes these meta keys:
+     schema_version  "1"
+     built           local time, "YYYY-MM-DD HH:MM:SS"
+     generator       "nxt_build_gameval_db"
+     source          local | local+live-fallback | local+beta-fallback | live | beta
+                     (a fallback enabled with nxt_cache_enable_live_fallback_with_config
+                     reads as +live-fallback; nxt_cache_open_live_with_config as live)
+     cache           the absolute cache directory, or the JS5 endpoint
+     build           the JS5 server build (live and beta sources only)
+     index_version   nxt_gameval_index_version()'s value
+     source_mtime    js5-67.jcache's mtime (local sources, when that file exists)
+     groups, rows, bit_table_check   the builder's counts and bit-table result
+
+   Atomicity: the database is written to "<out_path>.partial" and renamed over
+   out_path only once it is complete. An existing out_path is REPLACED; there is
+   no refuse-if-exists mode. If the call fails, out_path is untouched (a previous
+   DB stays byte-for-byte as it was) and the .partial file is deleted. A stale
+   .partial file left by a crashed process is deleted when the next build starts.
+   On Windows the final rename fails, with NXT_ERR_IO and the old DB kept, while
+   any process holds out_path open without FILE_SHARE_DELETE. sqlite, and
+   sqlite-jdbc with it, opens files that way, so close every connection to
+   out_path before rebuilding it.
+
+   Returns:
+     NXT_OK            out_path holds the new database.
+     NXT_ERR_INVALID   NULL or empty argument, malformed extra_meta_json, a
+                       non-string value, or a reserved key. Nothing is written.
+     NXT_ERR_NOT_FOUND index 67 is absent (see above). Nothing is written.
+     NXT_ERR_DECODE    an archive that index 67 lists is missing or decodes to
+                       nothing, or a bit table maps onto varbits of another domain.
+     NXT_ERR_IO        sqlite failed, or the .partial file could not be cleared or
+                       renamed over out_path (unwritable directory, out_path is a
+                       directory, or out_path is held open).
+     NXT_ERR_INTERNAL  out of memory, or an unexpected exception.
+   The reason is in nxt_last_error(). The call can take seconds; it holds no
+   lock beyond the handle the caller already must not share. */
+NXT_API nxt_result nxt_build_gameval_db(nxt_cache *cache, const char *out_path,
+                                        const char *extra_meta_json);
+
 /* ---- Map collision ------------------------------------------------------
  *
  * Decode the directional clip grid for one map square (cache index 5). The

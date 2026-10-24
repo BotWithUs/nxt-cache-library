@@ -404,78 +404,9 @@ json gameValGroupJson(CacheSource &cache, int archiveId)
     };
 }
 
-// Where the gamevals come from, for the meta rows of a baked gameval.sqlite.
-// Exactly one of localCache / liveCache is non-null.
-struct GameValSource
-{
-    std::string sourceMode;
-    std::string fallbackMode;
-    bool isBeta;
-    std::string cachePath;
-    RSCache *localCache;
-    js5::Js5Cache *liveCache;
-};
-
-std::string fileMtime(const std::filesystem::path &file)
-{
-    std::error_code ec;
-    const auto ftime = std::filesystem::last_write_time(file, ec);
-    if (ec)
-    {
-        return {};
-    }
-    const auto sys = std::chrono::clock_cast<std::chrono::system_clock>(ftime);
-    const std::time_t t = std::chrono::system_clock::to_time_t(sys);
-    std::tm tm{};
-#ifdef _WIN32
-    localtime_s(&tm, &t);
-#else
-    localtime_r(&t, &tm);
-#endif
-    char buf[32];
-    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
-    return buf;
-}
-
-// meta rows naming the source: source = local | live | beta (+ "+live-fallback"
-// / "+beta-fallback" for a local cache backed by JS5), cache = the directory or
-// JS5 endpoint, build = the JS5 server build when there is a server, and
-// index_version = index 67's reference-table version, the closest thing a local
-// cache has to a revision stamp.
-std::vector<std::pair<std::string, std::string>> gameValSourceMeta(const GameValSource &src)
-{
-    std::vector<std::pair<std::string, std::string>> meta;
-    meta.emplace_back("generator", "nxtcache-dumper --type gameval --sqlite");
-    if (src.liveCache != nullptr)
-    {
-        const js5::ServerConfig &cfg = src.liveCache->serverConfig();
-        meta.emplace_back("source", src.isBeta ? "beta" : "live");
-        meta.emplace_back("cache", cfg.endpoint);
-        meta.emplace_back("build", std::to_string(cfg.serverVersionMajor));
-        meta.emplace_back("index_version",
-                          std::to_string(src.liveCache->index(nxt::kGameValIndex).version));
-        return meta;
-    }
-    std::string source = "local";
-    if (!src.fallbackMode.empty())
-    {
-        source += src.isBeta ? "+beta-fallback" : "+live-fallback";
-    }
-    meta.emplace_back("source", source);
-    meta.emplace_back("cache", std::filesystem::absolute(src.cachePath).string());
-    meta.emplace_back("index_version",
-                      std::to_string(src.localCache->index(nxt::kGameValIndex).version));
-    const std::string mtime = fileMtime(std::filesystem::path(src.cachePath) / "js5-67.jcache");
-    if (!mtime.empty())
-    {
-        meta.emplace_back("source_mtime", mtime);
-    }
-    return meta;
-}
-
 // --type gameval --sqlite <file>: bake the Java host's gameval.sqlite.
-int bakeGameValDb(CacheSource &cache, const GameValSource &src, const std::string &outFile,
-                  bool force)
+int bakeGameValDb(CacheSource &cache, const nxt::GameValSourceInfo &src,
+                  const std::string &outFile, bool force)
 {
     if (std::filesystem::exists(outFile) && !force)
     {
@@ -484,7 +415,7 @@ int bakeGameValDb(CacheSource &cache, const GameValSource &src, const std::strin
     }
     try
     {
-        const nxt::GameValDbResult r = nxt::buildGameValDb(cache, outFile, gameValSourceMeta(src));
+        const nxt::GameValDbResult r = nxt::buildGameValDb(cache, outFile, nxt::gameValSourceMeta(cache, src));
         for (const auto &t : r.types)
         {
             std::cerr << "  " << t.etype << " (archive " << t.archive << "): " << t.rows << " rows";
@@ -662,7 +593,6 @@ int main(int argc, char **argv)
     }
 
     std::unique_ptr<CacheSource> cache;
-    RSCache *localCache = nullptr;       // non-null when cache is an RSCache
     js5::Js5Cache *liveCache = nullptr;  // non-null when cache is a Js5Cache
     try
     {
@@ -678,7 +608,6 @@ int main(int argc, char **argv)
         else
         {
             auto local = std::make_unique<RSCache>(cachePath);
-            localCache = local.get();
             if (fallbackMode == "live")
             {
                 local->enableLiveFallback(beta);
@@ -967,7 +896,12 @@ int main(int argc, char **argv)
     {
         if (!sqlitePath.empty())
         {
-            const GameValSource src{sourceMode, fallbackMode, beta, cachePath, localCache, liveCache};
+            nxt::GameValSourceInfo src;
+            src.generator = "nxtcache-dumper --type gameval --sqlite";
+            src.liveConfig = liveCache != nullptr ? &liveCache->serverConfig() : nullptr;
+            src.isBeta = beta;
+            src.hasFallback = !fallbackMode.empty();
+            src.cacheDir = cachePath;
             return bakeGameValDb(*cache, src, sqlitePath, force);
         }
 

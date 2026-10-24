@@ -4,6 +4,7 @@
 #include "c_api/Js5ServerConfig.h"
 
 #include "config_types/GameVal.h"
+#include "config_types/GameValDb.h"
 #include "config_types/InterfaceTypes.h"
 #include "config_types/ModelType.h"
 #include "config_types/SpriteType.h"
@@ -31,7 +32,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <filesystem>
 #include <memory>
+#include <new>
 #include <optional>
 #include <string>
 #include <vector>
@@ -43,7 +46,11 @@ using json = nlohmann::json;
 struct Cache
 {
     std::unique_ptr<CacheSource> source;
-    RSCache *local{nullptr};   // non-owning, only set if `source` is RSCache
+    RSCache *local{nullptr};         // non-owning, only set if `source` is RSCache
+    js5::Js5Cache *live{nullptr};    // non-owning, only set if `source` is Js5Cache
+    std::string localPath;           // UTF-8 cache directory of a local cache
+    bool isBeta{false};              // live: the beta endpoint; local: the beta fallback
+    bool hasFallback{false};         // local: a live fallback is enabled
     std::unique_ptr<DbRowProvider> dbProvider;
     std::unique_ptr<maps::DefCache> mapDefs;   // memoizes loc/overlay defs across clip calls
 };
@@ -596,12 +603,15 @@ nxt_result resolveCallerConfig(const char *fn, const nxt_js5_server_config *conf
 // Wraps a live CacheSource made by `makeSource` in a handle. `what` prefixes
 // the error message; returns NULL on failure.
 template <typename MakeSource>
-nxt_cache *openLiveImpl(const char *what, MakeSource &&makeSource)
+nxt_cache *openLiveImpl(const char *what, bool isBeta, MakeSource &&makeSource)
 {
     try
     {
         auto wrap = std::make_unique<Cache>();
-        wrap->source = makeSource();
+        std::unique_ptr<js5::Js5Cache> live = makeSource();
+        wrap->live = live.get();
+        wrap->isBeta = isBeta;
+        wrap->source = std::move(live);
         return reinterpret_cast<nxt_cache *>(wrap.release());
     }
     catch (const std::exception &e)
@@ -611,9 +621,11 @@ nxt_cache *openLiveImpl(const char *what, MakeSource &&makeSource)
     }
 }
 
-// Runs `enable(RSCache &)` on a local cache; a live cache is a no-op.
+// Runs `enable(RSCache &)` on a local cache; a live cache is a no-op. The first
+// fallback enabled is the one in force (RSCache ignores later ones), so only it
+// sets the handle's isBeta.
 template <typename Enable>
-nxt_result enableLiveFallbackImpl(nxt_cache *handle, Enable &&enable)
+nxt_result enableLiveFallbackImpl(nxt_cache *handle, bool isBeta, Enable &&enable)
 {
     if (!handle)
     {
@@ -629,6 +641,11 @@ nxt_result enableLiveFallbackImpl(nxt_cache *handle, Enable &&enable)
     try
     {
         enable(*c->local);
+        if (!c->hasFallback)
+        {
+            c->hasFallback = true;
+            c->isBeta = isBeta;
+        }
         return NXT_OK;
     }
     catch (const std::exception &e)
@@ -636,6 +653,73 @@ nxt_result enableLiveFallbackImpl(nxt_cache *handle, Enable &&enable)
         setError(std::string("enable_live_fallback failed: ") + e.what());
         return NXT_ERR_IO;
     }
+}
+
+// extra_meta_json -> meta pairs. NULL is no extra meta. Returns NXT_ERR_INVALID
+// (with the reason set) for anything but an object of string values whose keys
+// the library does not write itself.
+nxt_result parseExtraMeta(const char *extraMetaJson,
+                          std::vector<std::pair<std::string, std::string>> &outMeta)
+{
+    constexpr const char *fn = "nxt_build_gameval_db";
+    if (extraMetaJson == nullptr)
+    {
+        return NXT_OK;
+    }
+    const json doc = json::parse(extraMetaJson, nullptr, /*allow_exceptions=*/false);
+    if (doc.is_discarded() || !doc.is_object())
+    {
+        setError(std::string(fn) + ": extra_meta_json is not a JSON object");
+        return NXT_ERR_INVALID;
+    }
+    for (const auto &[key, value] : doc.items())
+    {
+        if (!value.is_string())
+        {
+            setError(std::string(fn) + ": extra_meta_json value for '" + key + "' is not a string");
+            return NXT_ERR_INVALID;
+        }
+        if (nxt::isGameValMetaKeyReserved(key))
+        {
+            setError(std::string(fn) + ": extra_meta_json key '" + key + "' is written by the library");
+            return NXT_ERR_INVALID;
+        }
+        outMeta.emplace_back(key, value.get<std::string>());
+    }
+    return NXT_OK;
+}
+
+nxt::GameValSourceInfo gameValSourceInfo(const Cache &c)
+{
+    nxt::GameValSourceInfo info;
+    info.generator = "nxt_build_gameval_db";
+    info.liveConfig = c.live != nullptr ? &c.live->serverConfig() : nullptr;
+    info.isBeta = c.isBeta;
+    info.hasFallback = c.hasFallback;
+    info.cacheDir = std::filesystem::path(reinterpret_cast<const char8_t *>(c.localPath.c_str()));
+    return info;
+}
+
+// The build itself, with every expected failure mapped to its result code.
+nxt_result buildGameValDbImpl(Cache &c, const char *outPath, const char *extraMetaJson)
+{
+    constexpr const char *fn = "nxt_build_gameval_db";
+    std::vector<std::pair<std::string, std::string>> extra;
+    const nxt_result rc = parseExtraMeta(extraMetaJson, extra);
+    if (rc != NXT_OK)
+    {
+        return rc;
+    }
+    if (!nxt::gameValIndexVersion(*c.source))
+    {
+        setError(std::string(fn) + ": cache has no gameval archives (index 67 absent or empty)");
+        return NXT_ERR_NOT_FOUND;
+    }
+    std::vector<std::pair<std::string, std::string>> meta = nxt::gameValSourceMeta(*c.source, gameValSourceInfo(c));
+    meta.insert(meta.end(), extra.begin(), extra.end());
+    const std::filesystem::path out(reinterpret_cast<const char8_t *>(outPath));
+    nxt::buildGameValDb(*c.source, out, meta);
+    return NXT_OK;
 }
 
 }  // namespace
@@ -701,6 +785,7 @@ nxt_cache *nxt_cache_open_local(const char *cache_path)
         auto wrap = std::make_unique<Cache>();
         auto local = std::make_unique<RSCache>(std::string(cache_path));
         wrap->local = local.get();
+        wrap->localPath = cache_path;
         wrap->source = std::move(local);
         return reinterpret_cast<nxt_cache *>(wrap.release());
     }
@@ -713,12 +798,12 @@ nxt_cache *nxt_cache_open_local(const char *cache_path)
 
 nxt_cache *nxt_cache_open_live(void)
 {
-    return openLiveImpl("open_live", []() { return std::make_unique<js5::Js5Cache>(/*beta=*/false); });
+    return openLiveImpl("open_live", /*isBeta=*/false, []() { return std::make_unique<js5::Js5Cache>(/*beta=*/false); });
 }
 
 nxt_cache *nxt_cache_open_live_beta(void)
 {
-    return openLiveImpl("open_live_beta", []() { return std::make_unique<js5::Js5Cache>(/*beta=*/true); });
+    return openLiveImpl("open_live_beta", /*isBeta=*/true, []() { return std::make_unique<js5::Js5Cache>(/*beta=*/true); });
 }
 
 nxt_cache *nxt_cache_open_live_with_config(const nxt_js5_server_config *config)
@@ -728,18 +813,20 @@ nxt_cache *nxt_cache_open_live_with_config(const nxt_js5_server_config *config)
     {
         return nullptr;
     }
-    return openLiveImpl("open_live_with_config",
+    return openLiveImpl("open_live_with_config", /*isBeta=*/false,
                         [&resolved]() { return std::make_unique<js5::Js5Cache>(std::move(*resolved)); });
 }
 
 nxt_result nxt_cache_enable_live_fallback(nxt_cache *handle)
 {
-    return enableLiveFallbackImpl(handle, [](RSCache &local) { local.enableLiveFallback(/*beta=*/false); });
+    return enableLiveFallbackImpl(handle, /*isBeta=*/false,
+                                  [](RSCache &local) { local.enableLiveFallback(/*beta=*/false); });
 }
 
 nxt_result nxt_cache_enable_live_fallback_beta(nxt_cache *handle)
 {
-    return enableLiveFallbackImpl(handle, [](RSCache &local) { local.enableLiveFallback(/*beta=*/true); });
+    return enableLiveFallbackImpl(handle, /*isBeta=*/true,
+                                  [](RSCache &local) { local.enableLiveFallback(/*beta=*/true); });
 }
 
 nxt_result nxt_cache_enable_live_fallback_with_config(nxt_cache *handle,
@@ -751,7 +838,8 @@ nxt_result nxt_cache_enable_live_fallback_with_config(nxt_cache *handle,
     {
         return rc;
     }
-    return enableLiveFallbackImpl(handle, [&resolved](RSCache &local) { local.enableLiveFallback(*resolved); });
+    return enableLiveFallbackImpl(handle, /*isBeta=*/false,
+                                  [&resolved](RSCache &local) { local.enableLiveFallback(*resolved); });
 }
 
 void nxt_cache_close(nxt_cache *handle)
@@ -924,6 +1012,77 @@ nxt_result nxt_dump_gamevals_json(nxt_cache *handle, char **out_json, size_t *ou
     {
         setError(std::string("gameval dump failed: ") + ex.what());
         return NXT_ERR_DECODE;
+    }
+}
+
+nxt_result nxt_gameval_index_version(nxt_cache *handle, int32_t *out_version)
+{
+    constexpr const char *fn = "nxt_gameval_index_version";
+    if (out_version != nullptr)
+    {
+        *out_version = 0;
+    }
+    if (!handle || !out_version)
+    {
+        setError(std::string(fn) + ": null handle or out_version");
+        return NXT_ERR_INVALID;
+    }
+    auto *c = reinterpret_cast<Cache *>(handle);
+    try
+    {
+        const std::optional<int> version = nxt::gameValIndexVersion(*c->source);
+        if (!version)
+        {
+            setError(std::string(fn) + ": cache has no gameval archives (index 67 absent or empty)");
+            return NXT_ERR_NOT_FOUND;
+        }
+        *out_version = *version;
+        return NXT_OK;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string(fn) + ": " + e.what());
+        return NXT_ERR_IO;
+    }
+}
+
+nxt_result nxt_build_gameval_db(nxt_cache *handle, const char *out_path, const char *extra_meta_json)
+{
+    constexpr const char *fn = "nxt_build_gameval_db";
+    if (!handle || !out_path || out_path[0] == '\0')
+    {
+        setError(std::string(fn) + ": null handle, or null or empty out_path");
+        return NXT_ERR_INVALID;
+    }
+    try
+    {
+        return buildGameValDbImpl(*reinterpret_cast<Cache *>(handle), out_path, extra_meta_json);
+    }
+    catch (const nxt::GameValDbIoError &e)
+    {
+        setError(std::string(fn) + ": " + e.what());
+        return NXT_ERR_IO;
+    }
+    catch (const std::bad_alloc &)
+    {
+        setError(std::string(fn) + ": out of memory");
+        return NXT_ERR_INTERNAL;
+    }
+    catch (const std::filesystem::filesystem_error &e)
+    {
+        setError(std::string(fn) + ": " + e.what());
+        return NXT_ERR_IO;
+    }
+    catch (const std::runtime_error &e)
+    {
+        // The cache: an archive missing, undecodable, or a wrong bit table.
+        setError(std::string(fn) + ": " + e.what());
+        return NXT_ERR_DECODE;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string(fn) + ": unexpected: " + e.what());
+        return NXT_ERR_INTERNAL;
     }
 }
 
