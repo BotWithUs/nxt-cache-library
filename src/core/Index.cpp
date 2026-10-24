@@ -14,7 +14,11 @@
 Index::Index(int id, const std::string &file, FallbackFn fallback)
     : id(id), fallback_(std::move(fallback))
 {
-    auto rc = sqlite3_open(file.c_str(), &db);
+    // Read-only: an Index never writes, and plain sqlite3_open would create an
+    // empty js5-<id>.jcache in the game's cache dir for an index it lacks (e.g.
+    // index 67 in a pre-951-1 cache). A missing file now fails the open, which
+    // the reads below already treat as "no reference table".
+    auto rc = sqlite3_open_v2(file.c_str(), &db, SQLITE_OPEN_READONLY, nullptr);
     if (rc != SQLITE_OK)
     {
         std::printf("Failed to open %s database: %s\n", file.c_str(), sqlite3_errmsg(db));
