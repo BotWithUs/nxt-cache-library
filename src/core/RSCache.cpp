@@ -91,6 +91,11 @@ Archive &RSCache::archive(int indexId, int archiveId)
     return index(indexId).archive(archiveId);
 }
 
+int RSCache::indexVersion(int indexId)
+{
+    return index(indexId).version;
+}
+
 std::vector<int> RSCache::fileIds(int indexId, int archiveId)
 {
     // The reference table (decoded when the Index is opened) already declares
@@ -107,5 +112,17 @@ void RSCache::evictArchive(int indexId, int archiveId)
 {
     auto it = indices.find(indexId);
     if (it == indices.end()) return;
-    it->second.archives.erase(archiveId);
+    auto entry = it->second.archives.find(archiveId);
+    if (entry == it->second.archives.end()) return;
+    // Drop only the decoded data and go back to the state the reference table
+    // left it in: file headers (ids, name hashes) kept, offsets cleared. Erasing
+    // the entry, as this once did, also threw away that metadata, so the next
+    // read of the archive on this cache found an id -1 "absent" archive.
+    Archive &archive = entry->second;
+    archive.data = RSBuffer(nullptr, 0);
+    for (auto &[fileId, header] : archive.files)
+    {
+        header.fileOffset = 0;
+    }
+    archive.loaded = false;
 }
