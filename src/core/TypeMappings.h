@@ -54,6 +54,7 @@ inline const std::map<std::string, TypeMapping> &typeDefaults()
         // GameValGroupType ordinal), each archive holds a single id->name table
         // file. archiveId=-1 = sweep all groups; the dumper's gameval path uses
         // a dedicated decoder (config_types/GameVal.h), not the shard loader.
+        // Live caches carry it from 951-1 on; before that only the beta did.
         {"gameval",  {"gameval",  67, -1,  0}},
     };
     return kDefaults;

@@ -116,6 +116,8 @@ set(NXTCache_SOURCES
 	"src/c_api/nxtcache_c.cpp"
 	"src/c_api/nxtcache_c.h"
 	"src/config_types/GameVal.h"
+	"src/config_types/GameValDb.cpp"
+	"src/config_types/GameValDb.h"
 	"src/config_types/InterfaceTypes.cpp"
 	"src/config_types/InterfaceTypes.h"
 	"src/config_types/ModelType.cpp"
@@ -372,6 +374,44 @@ if(NXTCACHE_BUILD_TESTS) # build-tests
 	enable_testing()
 	add_test(NAME varp COMMAND nxtcache-varp-test)
 	set_tests_properties(varp PROPERTIES SKIP_RETURN_CODE 77)
+
+endif()
+# Target: nxtcache-gameval-test
+if(NXTCACHE_BUILD_TESTS) # build-tests
+	set(nxtcache-gameval-test_SOURCES
+		cmake.toml
+		"src/tests/test_gameval.cpp"
+	)
+
+	add_executable(nxtcache-gameval-test)
+
+	target_sources(nxtcache-gameval-test PRIVATE ${nxtcache-gameval-test_SOURCES})
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${nxtcache-gameval-test_SOURCES})
+
+	target_compile_features(nxtcache-gameval-test PRIVATE
+		cxx_std_20
+	)
+
+	target_include_directories(nxtcache-gameval-test PRIVATE
+		src
+	)
+
+	target_link_libraries(nxtcache-gameval-test PRIVATE
+		NXTCache
+		nlohmann_json::nlohmann_json
+		unofficial::sqlite3::sqlite3
+	)
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT nxtcache-gameval-test)
+	endif()
+
+	set(CMKR_TARGET nxtcache-gameval-test)
+	enable_testing()
+	add_test(NAME gameval_offline COMMAND nxtcache-gameval-test --offline)
+	add_test(NAME gameval COMMAND nxtcache-gameval-test)
+	set_tests_properties(gameval PROPERTIES SKIP_RETURN_CODE 77)
 
 endif()
 # Target: nxtcache-mapsquare-locs-test

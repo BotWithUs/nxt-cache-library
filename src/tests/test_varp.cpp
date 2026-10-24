@@ -8,9 +8,10 @@
 // Exit codes: 0 all checks passed, 1 a check failed, 77 cache absent (SKIP;
 // ctest reports it as skipped via SKIP_RETURN_CODE, never as passed).
 //
-// The gameval cross-check needs the beta JS5 endpoint (the live cache carries
-// no index 67). It runs only with NXTCACHE_TEST_BETA=1 and prints a SKIPPED
-// line otherwise, or when the beta is unreachable.
+// The gameval cross-check compares the beta's names with the beta's own varps
+// over the network (the local gameval checks live in test_gameval.cpp). It runs
+// only with NXTCACHE_TEST_BETA=1 and prints a SKIPPED line otherwise, or when
+// the beta is unreachable.
 
 #include "c_api/nxtcache_c.h"
 
@@ -332,10 +333,10 @@ std::set<int> listVarps(nxt_cache *cache)
     return out;
 }
 
-// Names and varps are compared within ONE build (the beta), because the live
-// cache has no index 67 and live and beta builds drift. Measured on build 947:
-// the var_player group also names ~50k '_'-prefixed ids ABOVE the last varp id,
-// which are not varps. So the predicate is "every name at or below the last
+// Names and varps are compared within ONE build (the beta), because live and
+// beta content drift even at the same build number. Measured on build 947: the
+// var_player group also names ~50k '_'-prefixed ids ABOVE the last varp id,
+// which are not varps (they are the packed varbit table; see GameVal.h). So the predicate is "every name at or below the last
 // varp id is a defined varp", not "every name is a varp".
 void compareGamevals(const nlohmann::json &entries, const std::set<int> &betaVarps,
                      const std::set<int> &liveVarps)

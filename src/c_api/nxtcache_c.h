@@ -186,11 +186,14 @@ NXT_API nxt_result nxt_list_archive_ids(nxt_cache *cache, int index_id,
 /* ---- GameVals (JS5 index 67) -------------------------------------------
  *
  * Symbolic id<->name tables for scriptable types (loc, npc, obj, component,
- * var_player, ...), staged on the beta for Jagex's Lua plugin system. Each
- * index-67 archive is one type's whole table; the type name maps to a fixed
- * archive id (see config_types/GameVal.h). Names are stored UPPERCASE. These
- * require an index-67-bearing cache — open with nxt_cache_open_live_beta() or a
- * local/openrs2 beta cache.
+ * var_player, mapelement, ...). Each index-67 archive is one type's whole
+ * table; the type name maps to a fixed archive id (see config_types/GameVal.h).
+ * Names are stored UPPERCASE. Every source works: a local cache (the live
+ * client ships js5-67.jcache from 951-1 on, so nxt_cache_open_local on the
+ * game's cache dir is the normal path), nxt_cache_open_live(), or
+ * nxt_cache_open_live_beta(). On a local cache from before 951-1 these return
+ * NXT_ERR_NOT_FOUND. The tables are returned raw: var_* groups still carry
+ * their packed '_'-prefixed bit table (see splitGameValBitTable).
  */
 
 /* One group's table as JSON: { "type", "archive", "count", "entries": { id:name } }.

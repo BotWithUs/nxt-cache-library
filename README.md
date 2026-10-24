@@ -76,6 +76,10 @@ nxtcache-dumper --type if --cache /path/to/jcache --out-dir ./interfaces
 # render an item's inventory icon to a BMP
 nxtcache-dumper --type itemicon --id 4151 --cache /path/to/jcache \
                 --width 64 --height 64 --out whip.bmp
+
+# bake the Java host's gameval.sqlite (name index, schema v1) from the local
+# cache; live caches ship the gameval index (67) from 951-1 on
+nxtcache-dumper --type gameval --cache /path/to/jcache --sqlite gameval.sqlite
 ```
 
 `--help` lists every type and option.

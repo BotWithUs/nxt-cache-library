@@ -1,4 +1,5 @@
 #include "config_types/GameVal.h"
+#include "config_types/GameValDb.h"
 #include "config_types/InterfaceTypes.h"
 #include "config_types/ModelType.h"
 #include "config_types/SpriteType.h"
@@ -17,9 +18,11 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -51,8 +54,9 @@ void usage(const char *prog)
         << "                      (sprite/model emit metadata only; pixel/geometry\n"
         << "                       bulk data is exposed via the C ABI. itemicon\n"
         << "                       renders an item's inventory icon to a BMP.\n"
-        << "                       gameval dumps the index-67 id->name tables; it is\n"
-        << "                       beta-only, so pair it with --beta.\n"
+        << "                       gameval dumps the index-67 id->name tables from\n"
+        << "                       any source: local (live caches ship\n"
+        << "                       js5-67.jcache from 951-1 on), live, or --beta.\n"
         << "                       locspawn scans the map squares (index 5) for the\n"
         << "                       world coordinates of the loc ids given in --ids.)\n"
         << "\n"
@@ -64,7 +68,7 @@ void usage(const char *prog)
         << "                      from the live JS5 source\n"
         << "  --beta              Use the beta JS5 endpoint (build 947,\n"
         << "                      content.beta.runescape.com) for --source live or\n"
-        << "                      --fallback live. Required for --type gameval.\n"
+        << "                      --fallback live.\n"
         << "\n"
         << "Optional:\n"
         << "  --id <n>            Dump a single id (default: dump all known)\n"
@@ -86,6 +90,11 @@ void usage(const char *prog)
         << "                      from memory before the next is read — required\n"
         << "                      for bulk dumps (the in-memory array swallows tens\n"
         << "                      of GB on a full sweep).\n"
+        << "  --sqlite <file>     For --type gameval: bake gameval.sqlite (the Java\n"
+        << "                      host's name index, schema v1) into <file> instead\n"
+        << "                      of writing JSON. Refuses an existing <file>\n"
+        << "                      unless --force is given.\n"
+        << "  --force             Let --sqlite replace an existing file\n"
         << "  --pretty            Pretty-print JSON (indent=2)\n"
         << "  --help              Show this message\n";
 }
@@ -395,6 +404,111 @@ json gameValGroupJson(CacheSource &cache, int archiveId)
     };
 }
 
+// Where the gamevals come from, for the meta rows of a baked gameval.sqlite.
+// Exactly one of localCache / liveCache is non-null.
+struct GameValSource
+{
+    std::string sourceMode;
+    std::string fallbackMode;
+    bool isBeta;
+    std::string cachePath;
+    RSCache *localCache;
+    js5::Js5Cache *liveCache;
+};
+
+std::string fileMtime(const std::filesystem::path &file)
+{
+    std::error_code ec;
+    const auto ftime = std::filesystem::last_write_time(file, ec);
+    if (ec)
+    {
+        return {};
+    }
+    const auto sys = std::chrono::clock_cast<std::chrono::system_clock>(ftime);
+    const std::time_t t = std::chrono::system_clock::to_time_t(sys);
+    std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
+    return buf;
+}
+
+// meta rows naming the source: source = local | live | beta (+ "+live-fallback"
+// / "+beta-fallback" for a local cache backed by JS5), cache = the directory or
+// JS5 endpoint, build = the JS5 server build when there is a server, and
+// index_version = index 67's reference-table version, the closest thing a local
+// cache has to a revision stamp.
+std::vector<std::pair<std::string, std::string>> gameValSourceMeta(const GameValSource &src)
+{
+    std::vector<std::pair<std::string, std::string>> meta;
+    meta.emplace_back("generator", "nxtcache-dumper --type gameval --sqlite");
+    if (src.liveCache != nullptr)
+    {
+        const js5::ServerConfig &cfg = src.liveCache->serverConfig();
+        meta.emplace_back("source", src.isBeta ? "beta" : "live");
+        meta.emplace_back("cache", cfg.endpoint);
+        meta.emplace_back("build", std::to_string(cfg.serverVersionMajor));
+        meta.emplace_back("index_version",
+                          std::to_string(src.liveCache->index(nxt::kGameValIndex).version));
+        return meta;
+    }
+    std::string source = "local";
+    if (!src.fallbackMode.empty())
+    {
+        source += src.isBeta ? "+beta-fallback" : "+live-fallback";
+    }
+    meta.emplace_back("source", source);
+    meta.emplace_back("cache", std::filesystem::absolute(src.cachePath).string());
+    meta.emplace_back("index_version",
+                      std::to_string(src.localCache->index(nxt::kGameValIndex).version));
+    const std::string mtime = fileMtime(std::filesystem::path(src.cachePath) / "js5-67.jcache");
+    if (!mtime.empty())
+    {
+        meta.emplace_back("source_mtime", mtime);
+    }
+    return meta;
+}
+
+// --type gameval --sqlite <file>: bake the Java host's gameval.sqlite.
+int bakeGameValDb(CacheSource &cache, const GameValSource &src, const std::string &outFile,
+                  bool force)
+{
+    if (std::filesystem::exists(outFile) && !force)
+    {
+        std::cerr << outFile << " exists; pass --force to replace it\n";
+        return 1;
+    }
+    try
+    {
+        const nxt::GameValDbResult r = nxt::buildGameValDb(cache, outFile, gameValSourceMeta(src));
+        for (const auto &t : r.types)
+        {
+            std::cerr << "  " << t.etype << " (archive " << t.archive << "): " << t.rows << " rows";
+            if (t.duplicateNames != 0)
+            {
+                std::cerr << ", " << t.duplicateNames << " duplicate name(s)";
+            }
+            std::cerr << "\n";
+        }
+        for (const auto &w : r.warnings)
+        {
+            std::cerr << "warning: " << w << "\n";
+        }
+        std::cerr << "bit tables: " << r.bitTableCheck << "\n"
+                  << r.rows << " names across " << r.types.size() << " types -> " << outFile << "\n";
+        return 0;
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "gameval.sqlite build failed: " << e.what() << "\n";
+        return 1;
+    }
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -403,6 +517,8 @@ int main(int argc, char **argv)
     std::string typeName;
     std::string outPath;
     std::string outDir;
+    std::string sqlitePath;
+    bool force = false;
     std::string idsArg;
     std::string sourceMode = "local";
     std::string fallbackMode;
@@ -458,6 +574,8 @@ int main(int argc, char **argv)
         else if (a == "--shift")    shiftOverride   = takeIntArg(i, "--shift");
         else if (a == "--out")      outPath         = takeArg(i, "--out");
         else if (a == "--out-dir")  outDir          = takeArg(i, "--out-dir");
+        else if (a == "--sqlite")   sqlitePath      = takeArg(i, "--sqlite");
+        else if (a == "--force")    force           = true;
         else if (a == "--width")    iconW           = takeIntArg(i, "--width");
         else if (a == "--height")   iconH           = takeIntArg(i, "--height");
         else if (a == "--ss")       iconSS          = takeIntArg(i, "--ss");
@@ -527,7 +645,25 @@ int main(int argc, char **argv)
         return 2;
     }
 
+    // Opening a local index with no js5-<n>.jcache makes sqlite create an empty
+    // one in the cache dir. Refuse rather than write into the game's cache.
+    if (typeName == "gameval" && sourceMode == "local" && fallbackMode.empty() &&
+        !std::filesystem::exists(std::filesystem::path(cachePath) / "js5-67.jcache"))
+    {
+        std::cerr << "No js5-67.jcache in " << cachePath
+                  << " (live caches ship it from 951-1 on); add --fallback live, or use\n"
+                     "--source live [--beta]\n";
+        return 1;
+    }
+    if (!sqlitePath.empty() && typeName != "gameval")
+    {
+        std::cerr << "--sqlite only applies to --type gameval\n";
+        return 2;
+    }
+
     std::unique_ptr<CacheSource> cache;
+    RSCache *localCache = nullptr;       // non-null when cache is an RSCache
+    js5::Js5Cache *liveCache = nullptr;  // non-null when cache is a Js5Cache
     try
     {
         if (sourceMode == "live")
@@ -536,11 +672,13 @@ int main(int argc, char **argv)
             std::cerr << "Connected to " << (beta ? "BETA" : "live") << " JS5 (build "
                       << live->serverConfig().serverVersionMajor << " @ "
                       << live->serverConfig().endpoint << ")\n";
+            liveCache = live.get();
             cache = std::move(live);
         }
         else
         {
             auto local = std::make_unique<RSCache>(cachePath);
+            localCache = local.get();
             if (fallbackMode == "live")
             {
                 local->enableLiveFallback(beta);
@@ -827,10 +965,10 @@ int main(int argc, char **argv)
     // (or --id) limits the dump to a single group.
     if (typeName == "gameval")
     {
-        if (!beta && sourceMode == "live")
+        if (!sqlitePath.empty())
         {
-            std::cerr << "warning: gamevals (index 67) are beta-only; "
-                         "live (non-beta) JS5 has no index 67 — add --beta\n";
+            const GameValSource src{sourceMode, fallbackMode, beta, cachePath, localCache, liveCache};
+            return bakeGameValDb(*cache, src, sqlitePath, force);
         }
 
         std::vector<int> groupIds;
