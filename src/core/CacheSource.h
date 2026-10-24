@@ -12,6 +12,10 @@ public:
     virtual std::vector<int> archiveIds(int indexId) = 0;
     virtual Archive &archive(int indexId, int archiveId) = 0;
 
+    // The version field of an index's reference table: 0 when the table is
+    // absent or predates format 6. Loads the reference table, never an archive.
+    virtual int indexVersion(int indexId) = 0;
+
     // Return the file ids the index reference table declares for one archive,
     // in ascending order, WITHOUT decoding the archive's file contents — empty
     // if the archive is absent. Both backends populate the per-archive file id

@@ -36,6 +36,7 @@ NXTCACHE_BUILD_TESTS = true
 build-dumper = "NXTCACHE_BUILD_DUMPER"
 build-mirror = "NXTCACHE_BUILD_MIRROR"
 build-tests = "NXTCACHE_BUILD_TESTS"
+build-tests-with-dumper = "NXTCACHE_BUILD_TESTS AND NXTCACHE_BUILD_DUMPER"
 
 [vcpkg]
 version = "2025.06.13"
@@ -178,6 +179,26 @@ enable_testing()
 add_test(NAME gameval_offline COMMAND nxtcache-gameval-test --offline)
 add_test(NAME gameval COMMAND nxtcache-gameval-test)
 set_tests_properties(gameval PROPERTIES SKIP_RETURN_CODE 77)
+"""
+
+# nxt_build_gameval_db + nxt_gameval_index_version through the C ABI: arguments
+# and the absent-index-67 result need no cache; against a real cache the
+# export's DB must be row-identical to the dumper's --type gameval --sqlite.
+# Exit 77 (SKIPPED) only when the cache has no js5-67.jcache.
+[target.nxtcache-gameval-c-api-test]
+condition = "build-tests-with-dumper"
+type = "executable"
+sources = ["src/tests/test_gameval_c_api.cpp"]
+include-directories = ["src"]
+link-libraries = [
+    "NXTCache",
+    "unofficial::sqlite3::sqlite3",
+]
+compile-features = ["cxx_std_20"]
+cmake-after = """
+enable_testing()
+add_test(NAME gameval_c_api COMMAND nxtcache-gameval-c-api-test $<TARGET_FILE:nxtcache-dumper>)
+set_tests_properties(gameval_c_api PROPERTIES SKIP_RETURN_CODE 77)
 """
 
 # nxt_get_mapsquare_locs against a real cache, cross-checked with the C++

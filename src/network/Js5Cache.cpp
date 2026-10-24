@@ -33,6 +33,11 @@ Archive &Js5Cache::archive(int indexId, int archiveId)
     return index(indexId).archive(archiveId);
 }
 
+int Js5Cache::indexVersion(int indexId)
+{
+    return index(indexId).version;
+}
+
 std::vector<int> Js5Cache::fileIds(int indexId, int archiveId)
 {
     // Reference-table file ids are populated at index construction (no group

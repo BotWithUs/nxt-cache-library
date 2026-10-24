@@ -32,6 +32,7 @@ public:
 
     std::vector<int> archiveIds(int indexId) override;
     Archive &archive(int indexId, int archiveId) override;
+    int indexVersion(int indexId) override;
     std::vector<int> fileIds(int indexId, int archiveId) override;
     void evictArchive(int indexId, int archiveId) override;
 
