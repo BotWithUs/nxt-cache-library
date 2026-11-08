@@ -2247,8 +2247,6 @@ struct nxt_cs2_table
     cs2::OpcodeTable table;
 };
 
-extern "C" {
-
 namespace {
 
 // Shared tail of the two clientscript entry points: decode, JSON.
@@ -2271,6 +2269,8 @@ nxt_result clientScriptToJson(const uint8_t *data, size_t size, int id, const nx
 }
 
 }  // namespace
+
+extern "C" {
 
 nxt_cs2_table *nxt_cs2_table_open(const char *opcodes_json)
 {
