@@ -840,6 +840,33 @@ NXT_API nxt_result nxt_stat_level_for_xp(nxt_cache *cache, int stat_id, uint32_t
    "defaultXpTable": [...] }. Free *out_json with nxt_free. */
 NXT_API nxt_result nxt_get_stats_json(nxt_cache *cache, char **out_json, size_t *out_len);
 
+/* ---- ClientScripts (CS2, JS5 index 12) -----------------------------------
+ *
+ * One group per script id, the script in file 0; list the ids with
+ * nxt_list_archive_ids(cache, 12, ...). Opcode numbers are reshuffled per
+ * client build, so the library knows no opcode: the caller passes the
+ * revision's opcode table as the text of an opcodes.json document. With
+ * opcodes_json NULL only the header and switch tables decode.
+ *
+ * The result is JSON: { "id", "name" (null when absent), "args" {int,string,
+ * long}, "locals" {int,string,long}, "instructionCount", "complete",
+ * "instructions": [{ "index", "byteOffset", "opcode", "name"?, "operandKind"?,
+ * "operand"? }], "switches": [[{ "value", "target" }]], "failure"?, "error"? }.
+ *
+ * A script that stops decoding early (an opcode missing from the table, so its
+ * operand width is unknown, or truncated data) is still NXT_OK: "complete" is
+ * false, "failure" names the reason, and the instructions decoded before the
+ * stop are kept. NXT_ERR_INVALID: null argument, or opcodes_json is malformed.
+ * Free *out_json with nxt_free. */
+NXT_API nxt_result nxt_get_clientscript_json(nxt_cache *cache, int id, const char *opcodes_json,
+                                             char **out_json, size_t *out_len);
+
+/* The same decode over a script file the caller already holds (no cache).
+   data may be NULL only when size is 0. */
+NXT_API nxt_result nxt_decode_clientscript_json(const uint8_t *data, size_t size, int id,
+                                                const char *opcodes_json,
+                                                char **out_json, size_t *out_len);
+
 #ifdef __cplusplus
 }  /* extern "C" */
 #endif

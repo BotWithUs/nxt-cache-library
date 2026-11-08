@@ -10,6 +10,7 @@
 #include "core/Index.h"
 #include "core/RSCache.h"
 #include "core/TypeMappings.h"
+#include "dumper/ClientScriptDump.h"
 #include "dumper/Json.h"
 #include "maps/MapSquare.h"
 #include "network/Js5Cache.h"
@@ -50,7 +51,7 @@ void usage(const char *prog)
         << "  --type <name>       npc | item | loc | seq | varbit | varp | enum | struct |\n"
         << "                      inv | param | quest | underlay | overlay |\n"
         << "                      worldmap | dbrow | if | sprite | model | itemicon |\n"
-        << "                      gameval | locspawn | wmespawn\n"
+        << "                      gameval | locspawn | wmespawn | clientscript\n"
         << "                      (sprite/model emit metadata only; pixel/geometry\n"
         << "                       bulk data is exposed via the C ABI. itemicon\n"
         << "                       renders an item's inventory icon to a BMP.\n"
@@ -58,7 +59,9 @@ void usage(const char *prog)
         << "                       any source: local (live caches ship\n"
         << "                       js5-67.jcache from 951-1 on), live, or --beta.\n"
         << "                       locspawn scans the map squares (index 5) for the\n"
-        << "                       world coordinates of the loc ids given in --ids.)\n"
+        << "                       world coordinates of the loc ids given in --ids.\n"
+        << "                       clientscript disassembles CS2 scripts, index 12;\n"
+        << "                       see the clientscript options below.)\n"
         << "\n"
         << "Source (pick one; default: local):\n"
         << "  --cache <path>      Read from local sqlite jcache (js5-*.jcache files)\n"
@@ -96,6 +99,15 @@ void usage(const char *prog)
         << "                      unless --force is given.\n"
         << "  --force             Let --sqlite replace an existing file\n"
         << "  --pretty            Pretty-print JSON (indent=2)\n"
+        << "\n"
+        << "clientscript (one instruction per line: index opcode [name] operand):\n"
+        << "  --opcodes <file>    Per-revision opcodes.json: operand kinds (needed to\n"
+        << "                      decode instructions) and names. Without it only the\n"
+        << "                      header and switch tables decode.\n"
+        << "  --json              JSON instead of assembly text\n"
+        << "  --out-dir <path>    One <id>.cs2asm (or <id>.json) per script\n"
+        << "  --grep-op <n[,n]>   List the scripts that use any of these opcodes, with\n"
+        << "                      a use count per opcode\n"
         << "  --help              Show this message\n";
 }
 
@@ -267,6 +279,28 @@ bool parseInt(const std::string &s, int &out)
     {
         return false;
     }
+}
+
+// "a,b,c" -> ints. False on an empty element or a non-integer.
+bool parseIntList(const std::string &s, std::vector<int> &out)
+{
+    size_t start = 0;
+    while (start <= s.size())
+    {
+        size_t comma = s.find(',', start);
+        if (comma == std::string::npos)
+        {
+            comma = s.size();
+        }
+        int v = 0;
+        if (!parseInt(s.substr(start, comma - start), v))
+        {
+            return false;
+        }
+        out.push_back(v);
+        start = comma + 1;
+    }
+    return !out.empty();
 }
 
 // Load a single config entry by its registered type name (mirrors the C-ABI
@@ -460,6 +494,9 @@ int main(int argc, char **argv)
     std::optional<int> archiveOverride;
     std::optional<int> shiftOverride;
     bool pretty = false;
+    bool jsonOut = false;                     // clientscript: JSON, not assembly
+    std::string opcodesPath;                  // clientscript: opcodes.json
+    std::string grepOpsArg;                   // clientscript: --grep-op list
     int iconW = 64, iconH = 64, iconSS = 4;   // --type itemicon output size + SSAA
     std::string iconBg;                       // itemicon background: "" = transparent, else RRGGBB
     std::optional<int> ovXan, ovYan, ovZan, ovZoom;  // itemicon rotation/zoom overrides (debug)
@@ -516,6 +553,9 @@ int main(int argc, char **argv)
         else if (a == "--zan")      ovZan           = takeIntArg(i, "--zan");
         else if (a == "--zoom")     ovZoom          = takeIntArg(i, "--zoom");
         else if (a == "--pretty")   pretty          = true;
+        else if (a == "--json")     jsonOut         = true;
+        else if (a == "--opcodes")  opcodesPath     = takeArg(i, "--opcodes");
+        else if (a == "--grep-op")  grepOpsArg      = takeArg(i, "--grep-op");
         else
         {
             std::cerr << "Unknown argument: " << a << "\n\n";
@@ -620,6 +660,29 @@ int main(int argc, char **argv)
     {
         std::cerr << "Failed to open cache source: " << e.what() << "\n";
         return 1;
+    }
+
+    if (typeName == "clientscript")
+    {
+        nxtdump::ClientScriptDumpOptions cs;
+        cs.id = id;
+        cs.limit = limit;
+        cs.opcodesPath = opcodesPath;
+        cs.isJson = jsonOut;
+        cs.isPretty = pretty;
+        cs.outPath = outPath;
+        cs.outDir = outDir;
+        if (!grepOpsArg.empty() && !parseIntList(grepOpsArg, cs.grepOps))
+        {
+            std::cerr << "Invalid --grep-op list: " << grepOpsArg << "\n";
+            return 2;
+        }
+        return nxtdump::runClientScriptDump(*cache, cs);
+    }
+    if (jsonOut || !opcodesPath.empty() || !grepOpsArg.empty())
+    {
+        std::cerr << "--json, --opcodes and --grep-op only apply to --type clientscript\n";
+        return 2;
     }
 
     // Render mode: --type itemicon --id <item> [--out file.bmp] [--width/--height/--ss].

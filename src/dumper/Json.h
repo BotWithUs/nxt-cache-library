@@ -1,5 +1,6 @@
 #pragma once
 
+#include "config_types/ClientScript.h"
 #include "config_types/InterfaceTypes.h"
 #include "config_types/ModelType.h"
 #include "config_types/SpriteType.h"
@@ -925,6 +926,64 @@ inline json toJson(const ModelType &m)
             {"minZ", m.minZ}, {"maxZ", m.maxZ},
         }},
     };
+}
+
+// A decoded clientscript. Opcode names appear only when table carries them.
+inline json toJson(const cs2::ClientScript &s, const cs2::OpcodeTable *table)
+{
+    json insns = json::array();
+    for (const cs2::Instruction &i: s.instructions)
+    {
+        json j = {
+            {"index", i.index},
+            {"byteOffset", i.byteOffset},
+            {"opcode", i.opcode},
+        };
+        const cs2::OpcodeSpec *spec = table ? table->find(i.opcode) : nullptr;
+        if (spec && !spec->name.empty())
+        {
+            j["name"] = spec->name;
+        }
+        if (i.operand != cs2::OperandKind::None)
+        {
+            j["operandKind"] = std::string(cs2::operandKindName(i.operand));
+            if (i.operand == cs2::OperandKind::String)
+            {
+                j["operand"] = i.stringOperand;
+            }
+            else
+            {
+                j["operand"] = i.intOperand;
+            }
+        }
+        insns.push_back(std::move(j));
+    }
+    json switches = json::array();
+    for (const cs2::SwitchTable &t: s.switches)
+    {
+        json cases = json::array();
+        for (const cs2::SwitchCase &c: t.cases)
+        {
+            cases.push_back({{"value", c.value}, {"target", c.target}});
+        }
+        switches.push_back(std::move(cases));
+    }
+    json out = {
+        {"id", s.id},
+        {"name", s.name ? json(*s.name) : json(nullptr)},
+        {"args", {{"int", s.intArgCount}, {"string", s.stringArgCount}, {"long", s.longArgCount}}},
+        {"locals", {{"int", s.intLocalCount}, {"string", s.stringLocalCount}, {"long", s.longLocalCount}}},
+        {"instructionCount", s.declaredInstructionCount},
+        {"complete", s.isComplete()},
+        {"instructions", std::move(insns)},
+        {"switches", std::move(switches)},
+    };
+    if (!s.isComplete())
+    {
+        out["failure"] = std::string(cs2::decodeFailureName(s.failure));
+        out["error"] = s.error;
+    }
+    return out;
 }
 
 } // namespace nxtdump

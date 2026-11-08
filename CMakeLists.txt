@@ -115,6 +115,8 @@ set(NXTCache_SOURCES
 	"src/c_api/Js5ServerConfig.h"
 	"src/c_api/nxtcache_c.cpp"
 	"src/c_api/nxtcache_c.h"
+	"src/config_types/ClientScript.cpp"
+	"src/config_types/ClientScript.h"
 	"src/config_types/GameVal.h"
 	"src/config_types/GameValDb.cpp"
 	"src/config_types/GameValDb.h"
@@ -207,6 +209,8 @@ set_target_properties(NXTCache PROPERTIES
 if(NXTCACHE_BUILD_DUMPER) # build-dumper
 	set(nxtcache-dumper_SOURCES
 		cmake.toml
+		"src/dumper/ClientScriptDump.cpp"
+		"src/dumper/ClientScriptDump.h"
 		"src/dumper/Json.h"
 		"src/dumper/main.cpp"
 	)

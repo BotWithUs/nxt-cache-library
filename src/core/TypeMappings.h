@@ -56,6 +56,9 @@ inline const std::map<std::string, TypeMapping> &typeDefaults()
         // a dedicated decoder (config_types/GameVal.h), not the shard loader.
         // Live caches carry it from 951-1 on; before that only the beta did.
         {"gameval",  {"gameval",  67, -1,  0}},
+        // ClientScripts (CS2): index 12, one group per script id, the script in
+        // file 0. Decoded by config_types/ClientScript.h, not the shard loader.
+        {"clientscript", {"clientscript", 12, -1, 0}},
     };
     return kDefaults;
 }
