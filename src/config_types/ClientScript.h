@@ -58,10 +58,12 @@ struct OpcodeTable
     [[nodiscard]] const OpcodeSpec *find(int opcode) const;
 };
 
-// Parse an opcodes.json document: a JSON array of objects, each with at least
-// "opcode" (int) and "operand" ("byte" | "int" | "var" | "varbit" |
-// "typed_constant"), and optionally "name". Other fields are ignored. Returns
-// nullopt and sets *outError on a malformed document; never throws.
+// Parse an opcodes.json document: a JSON array of objects, each with "opcode"
+// (a JSON integer in 0..65535: no floats, booleans or strings), "operand" (a
+// string: "byte" | "int" | "var" | "varbit" | "typed_constant") and
+// optionally "name" (a string or null). Other fields are ignored; an opcode
+// may appear once. Returns nullopt and sets *outError naming the entry on a
+// malformed document; never throws.
 [[nodiscard]] std::optional<OpcodeTable> parseOpcodeTable(std::string_view json,
                                                           std::string *outError);
 

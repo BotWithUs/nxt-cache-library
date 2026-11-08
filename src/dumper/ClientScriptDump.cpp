@@ -184,23 +184,124 @@ struct Tally
     }
 };
 
-class Sink
+// Where decoded scripts go: one stream (text, or a JSON array), or one file
+// per script under --out-dir. --grep-op always reports to the one stream.
+class Emitter
 {
+    const ClientScriptDumpOptions &options_;
+    const cs2::OpcodeTable *nameTable_;
     std::ofstream file_;
     std::ostream *out_{&std::cout};
-public:
-    bool open(const std::string &path)
+    bool isJsonStream_{false};
+    bool isFirstJson_{true};
+
+    void jsonElement(const std::string &text)
     {
-        if (path.empty())
-        {
-            return true;
-        }
-        file_.open(path, std::ios::binary);
-        out_ = &file_;
-        return static_cast<bool>(file_);
+        *out_ << (isFirstJson_ ? "\n" : ",\n") << text;
+        isFirstJson_ = false;
     }
 
-    std::ostream &stream() { return *out_; }
+public:
+    Emitter(const ClientScriptDumpOptions &options, const cs2::OpcodeTable *nameTable, bool isGrep)
+        : options_(options), nameTable_(nameTable),
+          isJsonStream_(options.isJson && (options.outDir.empty() || isGrep))
+    {
+    }
+
+    // Opens --out and creates --out-dir. False after printing why.
+    bool open(bool isGrep)
+    {
+        if (!options_.outDir.empty() && !isGrep)
+        {
+            std::error_code ec;
+            std::filesystem::create_directories(options_.outDir, ec);
+            if (ec)
+            {
+                std::cerr << "Cannot create --out-dir " << options_.outDir << ": " << ec.message() << "\n";
+                return false;
+            }
+        }
+        if (!options_.outPath.empty())
+        {
+            file_.open(options_.outPath, std::ios::binary);
+            out_ = &file_;
+            if (!file_)
+            {
+                std::cerr << "Cannot write " << options_.outPath << "\n";
+                return false;
+            }
+        }
+        if (isJsonStream_)
+        {
+            *out_ << "[";
+        }
+        return true;
+    }
+
+    // "<id>  <opcode>[:<name>]=<uses> ...", or one JSON object.
+    void grepLine(const cs2::ClientScript &script, const std::map<int, int> &hits)
+    {
+        if (options_.isJson)
+        {
+            json uses = json::object();
+            for (const auto &[opcode, count] : hits)
+            {
+                uses[std::to_string(opcode)] = count;
+            }
+            jsonElement(json{{"id", script.id}, {"complete", script.isComplete()}, {"uses", std::move(uses)}}.dump());
+            return;
+        }
+        *out_ << script.id;
+        for (const auto &[opcode, count] : hits)
+        {
+            const cs2::OpcodeSpec *spec = nameTable_ ? nameTable_->find(opcode) : nullptr;
+            *out_ << "  " << opcode;
+            if (spec && !spec->name.empty())
+            {
+                *out_ << ":" << spec->name;
+            }
+            *out_ << "=" << count;
+        }
+        *out_ << (script.isComplete() ? "" : "  (partial decode)") << "\n";
+    }
+
+    // The script's listing. False if its --out-dir file cannot be written.
+    bool listing(const cs2::ClientScript &script)
+    {
+        const std::string text = renderScript(script, nameTable_, options_);
+        if (!options_.outDir.empty())
+        {
+            const auto path = std::filesystem::path(options_.outDir) /
+                              (std::to_string(script.id) + (options_.isJson ? ".json" : ".cs2asm"));
+            std::ofstream file(path, std::ios::binary);
+            file << text << "\n";
+            if (!file)
+            {
+                std::cerr << "Cannot write " << path.string() << "\n";
+                return false;
+            }
+        }
+        else if (isJsonStream_)
+        {
+            jsonElement(text);
+        }
+        else
+        {
+            *out_ << text << "\n";
+        }
+        return true;
+    }
+
+    // Closes the JSON array and flushes. False if the stream went bad.
+    bool close()
+    {
+        if (isJsonStream_)
+        {
+            *out_ << "\n]\n";
+        }
+        out_->flush();
+        return static_cast<bool>(*out_);
+    }
 };
 
 }  // namespace
@@ -217,39 +318,17 @@ int runClientScriptDump(CacheSource &cache, const ClientScriptDumpOptions &optio
         }
     }
     const cs2::OpcodeTable *tablePtr = table ? &*table : nullptr;
-    // The table always supplies operand widths; names only without --no-names.
-    const cs2::OpcodeTable *nameTable = options.isNoNames ? nullptr : tablePtr;
     const std::set<int> wanted(options.grepOps.begin(), options.grepOps.end());
     const bool isGrep = !wanted.empty();
-
-    if (!options.outDir.empty() && !isGrep)
+    // The table always supplies operand widths; names only without --no-names.
+    Emitter emitter(options, options.isNoNames ? nullptr : tablePtr, isGrep);
+    if (!emitter.open(isGrep))
     {
-        std::error_code ec;
-        std::filesystem::create_directories(options.outDir, ec);
-        if (ec)
-        {
-            std::cerr << "Cannot create --out-dir " << options.outDir << ": " << ec.message() << "\n";
-            return 1;
-        }
-    }
-    Sink sink;
-    if (!sink.open(options.outPath))
-    {
-        std::cerr << "Cannot write " << options.outPath << "\n";
         return 1;
     }
-    std::ostream &out = sink.stream();
 
     const auto started = std::chrono::steady_clock::now();
     Tally tally;
-    bool isFirstJson = true;
-    // --grep-op always reports to one stream; --out-dir applies to listings only.
-    const bool isJsonStream = options.isJson && (options.outDir.empty() || isGrep);
-    if (isJsonStream)
-    {
-        out << "[";
-    }
-
     for (int id : scriptIds(cache, options))
     {
         std::optional<cs2::ClientScript> script = loadScript(cache, id, tablePtr);
@@ -263,80 +342,29 @@ int runClientScriptDump(CacheSource &cache, const ClientScriptDumpOptions &optio
             continue;
         }
         tally.add(*script);
-
-        if (isGrep)
+        if (!isGrep)
         {
-            std::map<int, int> hits = grepHits(*script, wanted);
-            if (hits.empty())
+            if (!emitter.listing(*script))
             {
-                continue;
-            }
-            tally.matched++;
-            if (options.isJson)
-            {
-                json entry = {{"id", script->id}, {"complete", script->isComplete()}};
-                json uses = json::object();
-                for (const auto &[opcode, count] : hits)
-                {
-                    uses[std::to_string(opcode)] = count;
-                }
-                entry["uses"] = std::move(uses);
-                out << (isFirstJson ? "\n" : ",\n") << entry.dump();
-                isFirstJson = false;
-                continue;
-            }
-            out << script->id;
-            for (const auto &[opcode, count] : hits)
-            {
-                const cs2::OpcodeSpec *spec = nameTable ? nameTable->find(opcode) : nullptr;
-                out << "  " << opcode;
-                if (spec && !spec->name.empty())
-                {
-                    out << ":" << spec->name;
-                }
-                out << "=" << count;
-            }
-            out << (script->isComplete() ? "" : "  (partial decode)") << "\n";
-            continue;
-        }
-
-        std::string text = renderScript(*script, nameTable, options);
-        if (!options.outDir.empty())
-        {
-            auto path = std::filesystem::path(options.outDir) /
-                        (std::to_string(id) + (options.isJson ? ".json" : ".cs2asm"));
-            std::ofstream file(path, std::ios::binary);
-            file << text << "\n";
-            if (!file)
-            {
-                std::cerr << "Cannot write " << path.string() << "\n";
                 return 1;
             }
+            continue;
         }
-        else if (isJsonStream)
+        const std::map<int, int> hits = grepHits(*script, wanted);
+        if (!hits.empty())
         {
-            out << (isFirstJson ? "\n" : ",\n") << text;
-            isFirstJson = false;
-        }
-        else
-        {
-            out << text << "\n";
+            tally.matched++;
+            emitter.grepLine(*script, hits);
         }
     }
 
-    if (isJsonStream)
-    {
-        out << "\n]\n";
-    }
-    out.flush();
-    const double seconds =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-    tally.print(seconds, isGrep);
+    const bool isWritten = emitter.close();
+    tally.print(std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count(), isGrep);
     if (options.id && tally.missing != 0)
     {
         return 1;
     }
-    return out ? 0 : 1;
+    return isWritten ? 0 : 1;
 }
 
 }  // namespace nxtdump

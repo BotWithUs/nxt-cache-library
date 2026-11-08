@@ -844,9 +844,10 @@ NXT_API nxt_result nxt_get_stats_json(nxt_cache *cache, char **out_json, size_t 
  *
  * One group per script id, the script in file 0; list the ids with
  * nxt_list_archive_ids(cache, 12, ...). Opcode numbers are reshuffled per
- * client build, so the library knows no opcode: the caller passes the
- * revision's opcode table as the text of an opcodes.json document. With
- * opcodes_json NULL only the header and switch tables decode.
+ * client build, so the library knows no opcode: the caller parses the
+ * revision's opcodes.json once into an nxt_cs2_table and passes that handle
+ * to every decode. With a NULL table only the footer, switch tables and name
+ * decode.
  *
  * The result is JSON: { "id", "name" (null when absent), "args" {int,string,
  * long}, "locals" {int,string,long}, "instructionCount", "complete",
@@ -858,21 +859,35 @@ NXT_API nxt_result nxt_get_stats_json(nxt_cache *cache, char **out_json, size_t 
  * other. An instruction whose opcode is not in the table has "known": false
  * and no operand, and is always the last one.
  *
- * opcodes_json is a JSON array of { "opcode", "operand", "name"? } objects
- * (extra fields ignored), operand naming one of the kinds above.
- *
  * A script that stops decoding early (an opcode missing from the table, so its
  * operand width is unknown, or truncated data) is still NXT_OK: "complete" is
  * false, "failure" names the reason, and the instructions decoded before the
- * stop are kept. NXT_ERR_INVALID: null argument, or opcodes_json is malformed.
- * Free *out_json with nxt_free. */
-NXT_API nxt_result nxt_get_clientscript_json(nxt_cache *cache, int id, const char *opcodes_json,
+ * stop are kept. Free *out_json with nxt_free.
+ */
+typedef struct nxt_cs2_table nxt_cs2_table;
+
+/* Parse an opcodes.json document: a JSON array of { "opcode", "operand",
+   "name"? } objects (extra fields ignored). "opcode" must be a JSON integer in
+   0..65535, "operand" one of the kinds above, "name" a string or absent; an
+   opcode may appear once. Returns NULL on a malformed document (call
+   nxt_last_error). The table is immutable once opened, so one table may be
+   shared by concurrent decodes on different caches. Release with
+   nxt_cs2_table_free. */
+NXT_API nxt_cs2_table *nxt_cs2_table_open(const char *opcodes_json);
+
+/* Release a table. NULL is a no-op. No decode may be using it. */
+NXT_API void nxt_cs2_table_free(nxt_cs2_table *table);
+
+/* Decode one script from the cache. table may be NULL (see above).
+   NXT_ERR_INVALID: null cache or out parameter. NXT_ERR_NOT_FOUND: no such
+   script. */
+NXT_API nxt_result nxt_get_clientscript_json(nxt_cache *cache, int id, const nxt_cs2_table *table,
                                              char **out_json, size_t *out_len);
 
 /* The same decode over a script file the caller already holds (no cache).
    data may be NULL only when size is 0. */
 NXT_API nxt_result nxt_decode_clientscript_json(const uint8_t *data, size_t size, int id,
-                                                const char *opcodes_json,
+                                                const nxt_cs2_table *table,
                                                 char **out_json, size_t *out_len);
 
 #ifdef __cplusplus

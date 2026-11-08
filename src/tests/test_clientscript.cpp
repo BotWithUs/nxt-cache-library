@@ -9,13 +9,15 @@
 // script to the decoder, which must return without crashing.
 //
 // The cache mode decodes all of index 12 with the 951-3 operand-width table
-// (built below from the 951-3 exceptions; set NXTCACHE_CS2_OPCODES to a full
-// opcodes.json to use that instead) and requires every script to decode
-// completely. The per-script pins and corpus counts were cross-checked against
-// the RE peer's independent reader on the 951-3 cache. The index-12 reference
-// table carries no version, so they run only when a fingerprint of every
-// group's (id, CRC) equals the pinned one, and are reported as skipped
-// otherwise (a client update changes the scripts and the opcode numbers).
+// (built below from the 951-3 exceptions), or with NXTCACHE_CS2_OPCODES when
+// set. The index-12 reference table carries no version, so the pinned 951-3
+// cache is recognised by a fingerprint of every group's (id, CRC). Every
+// script must decode completely on the pinned cache or with a caller table;
+// on any other cache the built-in widths are stale (a client update reshuffles
+// opcode numbers), so the sweep runs as a no-crash check and completeness is
+// reported as skipped. The per-script pins and corpus counts, cross-checked
+// against the RE peer's independent reader, run only on the pinned cache.
+// testGates proves that gating on the real cache with a moved opcode table.
 //
 // cache-dir defaults to $NXTCACHE_TEST_CACHE, then C:\ProgramData\Jagex\RuneScape.
 // Exit codes: 0 pass, 1 a check failed, 77 cache absent (SKIP).
@@ -48,23 +50,39 @@ namespace
 constexpr int kExitSkip = 77;
 
 int failures = 0;
+int skipped = 0;
+bool isQuiet = false;  // set while a check runs in a sandbox (see sandboxedFailures)
+
+void report(const std::string &line)
+{
+    if (!isQuiet)
+    {
+        std::printf("  %s\n", line.c_str());
+    }
+}
 
 void check(bool isOk, const std::string &what)
 {
     if (!isOk)
     {
-        std::printf("  FAIL  %s\n", what.c_str());
+        report("FAIL  " + what);
         failures++;
     }
 }
 
 void checkLoud(bool isOk, const std::string &what)
 {
-    std::printf("  %s  %s\n", isOk ? "ok  " : "FAIL", what.c_str());
+    report(std::string(isOk ? "ok    " : "FAIL  ") + what);
     if (!isOk)
     {
         failures++;
     }
+}
+
+void skipCheck(const std::string &what)
+{
+    report("SKIPPED CHECK  " + what);
+    skipped++;
 }
 
 // ---- An encoder written from the format notes, independent of the decoder --
@@ -328,6 +346,49 @@ void testTableParse()
     checkLoud(!cs2::parseOpcodeTable(R"([{"opcode": 70000, "operand": "byte"}])", &error),
               "table: non-u16 opcode refused");
     checkLoud(!cs2::parseOpcodeTable(R"([{"operand": "byte"}])", &error), "table: missing opcode refused");
+
+    // Values that used to narrow silently to opcode 1.
+    const char *badOpcodes[] = {"4294967297", "1.9", "true", "-1", "\"5\"", "65536", "18446744073709551615", "null"};
+    for (const char *bad : badOpcodes)
+    {
+        const std::string doc = std::string(R"([{"opcode": )") + bad + R"(, "operand": "byte"}])";
+        error.clear();
+        checkLoud(!cs2::parseOpcodeTable(doc, &error) && error.find("\"opcode\" must be an integer") != std::string::npos,
+                  std::string("table: opcode ") + bad + " refused with a clear error");
+    }
+    checkLoud(!cs2::parseOpcodeTable(R"([{"opcode": 1, "operand": 3}])", &error), "table: non-string operand refused");
+    checkLoud(!cs2::parseOpcodeTable(R"([{"opcode": 1, "operand": "byte", "name": 7}])", &error),
+              "table: non-string name refused");
+    checkLoud(!cs2::parseOpcodeTable(R"([1])", &error), "table: non-object entry refused");
+    auto edges = cs2::parseOpcodeTable(
+        R"([{"opcode": 0, "operand": "byte", "name": null}, {"opcode": 65535, "operand": "int"}])", &error);
+    checkLoud(edges && edges->ops.size() == 2 && edges->find(65535) && edges->find(0)->name.empty(),
+              "table: opcodes 0 and 65535 accepted, null name allowed");
+}
+
+// Defined with the cache checks below.
+void pinScripts(const std::map<int, cs2::ClientScript> &pinned);
+
+// The pins index only what was decoded: short or missing scripts are FAILs.
+void testPinsNeverThrow()
+{
+    std::map<int, cs2::ClientScript> shortDecodes;
+    for (int id : {0, 2, 3, 5, 426})
+    {
+        cs2::ClientScript s;
+        s.id = id;
+        s.instructions.resize(1);
+        shortDecodes.emplace(id, std::move(s));
+    }
+    const int before = failures;
+    isQuiet = true;
+    pinScripts({});
+    const int onEmpty = failures - before;
+    pinScripts(shortDecodes);
+    const int onShort = failures - before - onEmpty;
+    isQuiet = false;
+    failures = before;
+    checkLoud(onEmpty == 5 && onShort == 5, "pins on missing / one-instruction scripts: 5 FAILs each, no throw");
 }
 
 void testCApi()
@@ -335,7 +396,9 @@ void testCApi()
     const std::vector<uint8_t> good = everyOperandScript().build();
     char *json = nullptr;
     size_t len = 0;
-    nxt_result rc = nxt_decode_clientscript_json(good.data(), good.size(), 7, kSyntheticTable, &json, &len);
+    nxt_cs2_table *table = nxt_cs2_table_open(kSyntheticTable);
+    checkLoud(table != nullptr, "C ABI: table opens");
+    nxt_result rc = nxt_decode_clientscript_json(good.data(), good.size(), 7, table, &json, &len);
     checkLoud(rc == NXT_OK && json != nullptr, "C ABI: decode returns NXT_OK");
     if (rc == NXT_OK)
     {
@@ -352,8 +415,20 @@ void testCApi()
     check(rc == NXT_OK && std::string(json, len).find("\"failure\":\"no_opcode_table\"") != std::string::npos,
           "C ABI: no table is NXT_OK with failure no_opcode_table");
     nxt_free(json);
-    check(nxt_decode_clientscript_json(good.data(), good.size(), 7, "[{", &json, &len) == NXT_ERR_INVALID,
-          "C ABI: malformed table is NXT_ERR_INVALID");
+    for (int i = 0; i < 3; i++)
+    {
+        rc = nxt_decode_clientscript_json(good.data(), good.size(), 7, table, &json, &len);
+        check(rc == NXT_OK && std::string(json, len).find("\"complete\":true") != std::string::npos,
+              "C ABI: one table serves repeated decodes");
+        nxt_free(json);
+    }
+    nxt_cs2_table_free(table);
+    nxt_cs2_table_free(nullptr);
+    checkLoud(nxt_cs2_table_open("[{") == nullptr && std::string(nxt_last_error()).find("bad opcodes_json") == 0,
+              "C ABI: malformed table refused at open, with nxt_last_error");
+    checkLoud(nxt_cs2_table_open(R"([{"opcode": 1.9, "operand": "byte"}])") == nullptr,
+              "C ABI: non-integer opcode refused at open");
+    checkLoud(nxt_cs2_table_open(nullptr) == nullptr, "C ABI: null opcodes_json refused");
     check(nxt_decode_clientscript_json(nullptr, 4, 7, nullptr, &json, &len) == NXT_ERR_INVALID,
           "C ABI: null data with a size is NXT_ERR_INVALID");
     check(nxt_get_clientscript_json(nullptr, 0, nullptr, &json, &len) == NXT_ERR_INVALID,
@@ -368,6 +443,7 @@ int runOffline()
     testStops(table);
     testMalformed(table);
     testTableParse();
+    testPinsNeverThrow();
     testCApi();
     std::printf("%s (%d failed)\n", failures == 0 ? "PASS" : "FAIL", failures);
     return failures == 0 ? 0 : 1;
@@ -376,7 +452,8 @@ int runOffline()
 // ---- Real cache -----------------------------------------------------------
 
 // The 951-3 operand widths: every opcode 0..2334 is byte unless listed here.
-// Numbers only; opcode names stay out of the library and its tests.
+// Numbers only; opcode names stay out of the library and its tests. Used
+// only to decode; completeness is enforced with it only on the pinned cache.
 cs2::OpcodeTable table951_3()
 {
     const std::set<int> intOps = {224,  352,  358,  412,  463,  495,  567,  606,  643,  645,  663,
@@ -396,12 +473,27 @@ cs2::OpcodeTable table951_3()
     return table;
 }
 
-std::optional<cs2::OpcodeTable> cacheTable()
+// A stand-in for the next client build: the same operand kinds, moved to
+// other opcode numbers (each opcode takes the kind of the opcode after it).
+cs2::OpcodeTable permuted(const cs2::OpcodeTable &table)
 {
+    cs2::OpcodeTable out;
+    for (auto it = table.ops.begin(); it != table.ops.end(); ++it)
+    {
+        auto next = std::next(it);
+        out.ops[it->first] = next == table.ops.end() ? table.ops.begin()->second : next->second;
+    }
+    return out;
+}
+
+// NXTCACHE_CS2_OPCODES, when set, is the caller's table for this cache.
+std::optional<cs2::OpcodeTable> callerTable(bool &outIsBad)
+{
+    outIsBad = false;
     const char *path = std::getenv("NXTCACHE_CS2_OPCODES");
     if (!path)
     {
-        return table951_3();
+        return std::nullopt;
     }
     std::ifstream in(path, std::ios::binary);
     std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -409,7 +501,8 @@ std::optional<cs2::OpcodeTable> cacheTable()
     auto table = cs2::parseOpcodeTable(text, &error);
     if (!table)
     {
-        std::printf("  FAIL  NXTCACHE_CS2_OPCODES %s: %s\n", path, error.c_str());
+        checkLoud(false, std::string("NXTCACHE_CS2_OPCODES ") + path + ": " + error);
+        outIsBad = true;
     }
     return table;
 }
@@ -440,35 +533,173 @@ struct CorpusCounts
     }
 };
 
+// One decode of all of index 12.
+struct Sweep
+{
+    long scripts{0};
+    long incomplete{0};
+    uint64_t fingerprint{1469598103934665603ULL};  // FNV-1a over each group's (id, CRC)
+    CorpusCounts counts;
+    std::map<int, cs2::ClientScript> pinned;
+    std::vector<std::string> firstFailures;
+
+    void mix(uint32_t v)
+    {
+        for (int b = 0; b < 4; b++)
+        {
+            fingerprint = (fingerprint ^ ((v >> (8 * b)) & 0xFF)) * 1099511628211ULL;
+        }
+    }
+};
+
+const std::set<int> kPinIds = {0, 2, 3, 5, 426};
+
+// The fingerprint of the 951-3 cache the pins and counts were taken from.
+constexpr uint64_t kPinnedFingerprint = 0xdf6678075f62b0bcULL;
+
+Sweep sweep(RSCache &cache, const cs2::OpcodeTable &table)
+{
+    Sweep out;
+    for (int id : cache.archiveIds(cs2::kClientScriptIndex))
+    {
+        Archive &archive = cache.archive(cs2::kClientScriptIndex, id);
+        out.mix(static_cast<uint32_t>(id));
+        out.mix(static_cast<uint32_t>(archive.crc));
+        RSBuffer buffer = archive.readFile(0);
+        const auto *data = reinterpret_cast<const uint8_t *>(buffer.buffer + buffer.readPosition);
+        cs2::ClientScript s = cs2::decodeClientScript(id, data, buffer.remaining(), &table);
+        cache.evictArchive(cs2::kClientScriptIndex, id);
+        out.scripts++;
+        if (!s.isComplete() && out.incomplete++ < 5)
+        {
+            out.firstFailures.push_back("script " + std::to_string(id) + ": " +
+                                        std::string(cs2::decodeFailureName(s.failure)) + ": " + s.error);
+        }
+        out.counts.add(s);
+        if (kPinIds.count(id) != 0)
+        {
+            out.pinned.emplace(id, std::move(s));
+        }
+    }
+    return out;
+}
+
+// Instruction index of pinned script id, or null when the decode is short of
+// it: the pins never index past what was decoded.
+const cs2::Instruction *pinnedInsn(const std::map<int, cs2::ClientScript> &pinned, int id, size_t index)
+{
+    const auto it = pinned.find(id);
+    if (it == pinned.end() || index >= it->second.instructions.size())
+    {
+        return nullptr;
+    }
+    return &it->second.instructions[index];
+}
+
 // Script 0's first 12 instructions as (opcode, operand); 641 = typed constant.
 void pinScripts(const std::map<int, cs2::ClientScript> &pinned)
 {
     const std::pair<int, int64_t> script0[] = {{1565, 1}, {1565, 2}, {1067, 0}, {641, 2},
                                                {2328, 0}, {1692, 3}, {1565, 3}, {1468, 0},
                                                {1692, 4}, {1565, 3}, {1565, 2}, {1468, 0}};
-    const cs2::ClientScript &s0 = pinned.at(0);
-    bool isOk = s0.instructions.size() >= 12 && s0.declaredInstructionCount == 90 && s0.intArgCount == 3 &&
-                s0.intLocalCount == 8 && s0.switches.empty() && !s0.name;
+    const auto s0 = pinned.find(0);
+    bool isOk = s0 != pinned.end() && s0->second.declaredInstructionCount == 90 && s0->second.intArgCount == 3 &&
+                s0->second.intLocalCount == 8 && s0->second.switches.empty() && !s0->second.name;
     for (size_t i = 0; isOk && i < 12; i++)
     {
-        isOk = s0.instructions[i].opcode == script0[i].first && s0.instructions[i].intOperand == script0[i].second;
+        const cs2::Instruction *insn = pinnedInsn(pinned, 0, i);
+        isOk = insn && insn->opcode == script0[i].first && insn->intOperand == script0[i].second;
     }
     checkLoud(isOk, "pin: script 0 footer and first 12 instructions");
 
-    const cs2::Instruction &var = pinned.at(3).instructions.at(5);
-    checkLoud(var.opcode == 1814 && var.varDomain == 0 && var.varId == 4517 && var.intOperand == 0,
+    const cs2::Instruction *var = pinnedInsn(pinned, 3, 5);
+    checkLoud(var && var->opcode == 1814 && var->operand == cs2::OperandKind::Var && var->varDomain == 0 &&
+                  var->varId == 4517 && var->intOperand == 0,
               "pin: script 3 #5 var 0:4517 flag 0");
-    const cs2::Instruction &varbit = pinned.at(5).instructions.at(0);
-    checkLoud(varbit.opcode == 57 && varbit.varId == 38842 && varbit.intOperand == 0,
+    const cs2::Instruction *varbit = pinnedInsn(pinned, 5, 0);
+    checkLoud(varbit && varbit->opcode == 57 && varbit->operand == cs2::OperandKind::Varbit &&
+                  varbit->varId == 38842 && varbit->intOperand == 0,
               "pin: script 5 #0 varbit 38842 flag 0");
-    const cs2::Instruction &lng = pinned.at(426).instructions.at(7);
-    checkLoud(lng.opcode == 641 && lng.constant == cs2::ConstantType::Long && lng.intOperand == -1,
+    const cs2::Instruction *lng = pinnedInsn(pinned, 426, 7);
+    checkLoud(lng && lng->opcode == 641 && lng->constant == cs2::ConstantType::Long && lng->intOperand == -1,
               "pin: script 426 #7 long constant -1");
-    const cs2::ClientScript &sw = pinned.at(2);
-    checkLoud(sw.switches.size() == 1 && sw.switches[0].cases.size() >= 3 &&
-                  sw.switches[0].cases[0].value == 54533 && sw.switches[0].cases[0].target == 1 &&
-                  sw.switches[0].cases[2].value == 54535 && sw.switches[0].cases[2].target == 17,
+    const auto sw = pinned.find(2);
+    checkLoud(sw != pinned.end() && sw->second.switches.size() == 1 && sw->second.switches[0].cases.size() >= 3 &&
+                  sw->second.switches[0].cases[0].value == 54533 && sw->second.switches[0].cases[0].target == 1 &&
+                  sw->second.switches[0].cases[2].value == 54535 && sw->second.switches[0].cases[2].target == 17,
               "pin: script 2 switch table 0");
+}
+
+// The checks a sweep earns. Completeness is enforced only where a failure
+// means a decoder bug: on the pinned cache, or with the caller's own table.
+// Anywhere else the built-in 951-3 widths are simply stale (the next client
+// build reshuffles opcode numbers), so the sweep counts as a no-crash run.
+void checkSweep(const Sweep &s, bool isCallerTable, uint64_t pinnedFingerprint)
+{
+    const bool isPinnedCache = s.fingerprint == pinnedFingerprint;
+    const std::string tally = std::to_string(s.scripts) + " scripts, " + std::to_string(s.incomplete) + " incomplete";
+    checkLoud(s.scripts > 0, "index 12 has scripts");
+    if (isPinnedCache || isCallerTable)
+    {
+        for (const std::string &failure : s.firstFailures)
+        {
+            report(failure);
+        }
+        checkLoud(s.incomplete == 0, "every script decodes completely: " + tally);
+    }
+    else
+    {
+        skipCheck("completeness (" + tally + "): not the pinned 951-3 cache and no NXTCACHE_CS2_OPCODES table; "
+                  "decoded as a no-crash sweep only");
+    }
+
+    if (!isPinnedCache)
+    {
+        skipCheck("pins and corpus counts: the cache is not the pinned 951-3 index 12");
+        return;
+    }
+    if (s.incomplete != 0)
+    {
+        checkLoud(false, "pins: " + std::to_string(s.incomplete) +
+                             " scripts do not decode with this table, so it does not match the pinned cache");
+        return;
+    }
+    pinScripts(s.pinned);
+    checkLoud(s.scripts == 21261, "pin: 21261 scripts");
+    checkLoud(s.counts.ints == 436152 && s.counts.strings == 43703 && s.counts.longs == 273,
+              "pin: constants int 436152 / string 43703 / long 273");
+    checkLoud(s.counts.vars == 29154 && s.counts.varbits == 50911, "pin: var 29154 / varbit 50911 refs");
+    checkLoud(s.counts.switchScripts == 4339, "pin: 4339 scripts with switch tables");
+}
+
+// checkSweep in a sandbox: its output is suppressed and its failures are
+// counted and returned instead of joining the run's.
+int sandboxedFailures(const Sweep &s, bool isCallerTable, uint64_t pinnedFingerprint)
+{
+    const int before = failures;
+    const int skippedBefore = skipped;
+    isQuiet = true;
+    checkSweep(s, isCallerTable, pinnedFingerprint);
+    isQuiet = false;
+    const int found = failures - before;
+    failures = before;
+    skipped = skippedBefore;
+    return found;
+}
+
+// The gate itself, on real data, using a table whose opcode numbers have moved
+// as a stand-in for the next client build.
+void testGates(RSCache &cache, const cs2::OpcodeTable &table, uint64_t realFingerprint)
+{
+    const Sweep moved = sweep(cache, permuted(table));
+    checkLoud(moved.incomplete > 0, "gate: a moved opcode table leaves scripts incomplete (" +
+                                        std::to_string(moved.incomplete) + "), no crash");
+    checkLoud(sandboxedFailures(moved, false, realFingerprint ^ 1) == 0,
+              "gate: next revision + built-in table -> skipped, not failed");
+    checkLoud(sandboxedFailures(moved, true, realFingerprint ^ 1) > 0,
+              "gate: next revision + a caller table that does not fit -> FAIL");
+    checkLoud(sandboxedFailures(moved, true, realFingerprint) > 0,
+              "gate: pinned cache + a mismatched caller table -> FAIL, no abort");
 }
 
 int runCache(const std::string &cachePath)
@@ -479,78 +710,22 @@ int runCache(const std::string &cachePath)
         return kExitSkip;
     }
     std::printf("clientscript cache %s\n", cachePath.c_str());
-    const std::optional<cs2::OpcodeTable> table = cacheTable();
-    if (!table)
+    bool isBadTable = false;
+    const std::optional<cs2::OpcodeTable> caller = callerTable(isBadTable);
+    if (isBadTable)
     {
         return 1;
     }
+    const cs2::OpcodeTable table = caller ? *caller : table951_3();
 
-    // FNV-1a over every index-12 group's (id, CRC) in the 951-3 cache the
-    // pins were taken from.
-    constexpr uint64_t kPinnedFingerprint = 0xdf6678075f62b0bcULL;
     RSCache cache(cachePath);
-    uint64_t fingerprint = 1469598103934665603ULL;
-    auto mix = [&fingerprint](uint32_t v) {
-        for (int b = 0; b < 4; b++)
-        {
-            fingerprint = (fingerprint ^ ((v >> (8 * b)) & 0xFF)) * 1099511628211ULL;
-        }
-    };
-
-    const std::set<int> pinIds = {0, 2, 3, 5, 426};
-    std::map<int, cs2::ClientScript> pinned;
-    CorpusCounts counts;
-    long scripts = 0;
-    long incomplete = 0;
-    for (int id : cache.archiveIds(cs2::kClientScriptIndex))
-    {
-        Archive &archive = cache.archive(cs2::kClientScriptIndex, id);
-        mix(static_cast<uint32_t>(id));
-        mix(static_cast<uint32_t>(archive.crc));
-        RSBuffer buffer = archive.readFile(0);
-        const auto *data = reinterpret_cast<const uint8_t *>(buffer.buffer + buffer.readPosition);
-        cs2::ClientScript s = cs2::decodeClientScript(id, data, buffer.remaining(), &*table);
-        cache.evictArchive(cs2::kClientScriptIndex, id);
-        scripts++;
-        if (!s.isComplete())
-        {
-            if (incomplete++ < 5)
-            {
-                std::printf("  FAIL  script %d: %s: %s\n", id, std::string(cs2::decodeFailureName(s.failure)).c_str(),
-                            s.error.c_str());
-            }
-            failures++;
-        }
-        counts.add(s);
-        if (pinIds.count(id) != 0)
-        {
-            pinned.emplace(id, std::move(s));
-        }
-    }
-    const bool isPinnedCache = fingerprint == kPinnedFingerprint;
-    std::printf("  index 12 fingerprint 0x%016llx (pins taken at 0x%016llx)\n",
-                static_cast<unsigned long long>(fingerprint), static_cast<unsigned long long>(kPinnedFingerprint));
-    checkLoud(scripts > 0 && incomplete == 0,
-              std::to_string(scripts) + " scripts, " + std::to_string(incomplete) + " incomplete");
-
-    if (!isPinnedCache)
-    {
-        std::printf("  SKIPPED CHECK  pins and corpus counts: the cache is not the pinned 951-3 index 12\n");
-    }
-    else if (pinned.size() != pinIds.size())
-    {
-        checkLoud(false, "pinned scripts present");
-    }
-    else
-    {
-        pinScripts(pinned);
-        checkLoud(scripts == 21261, "pin: 21261 scripts");
-        checkLoud(counts.ints == 436152 && counts.strings == 43703 && counts.longs == 273,
-                  "pin: constants int 436152 / string 43703 / long 273");
-        checkLoud(counts.vars == 29154 && counts.varbits == 50911, "pin: var 29154 / varbit 50911 refs");
-        checkLoud(counts.switchScripts == 4339, "pin: 4339 scripts with switch tables");
-    }
-    std::printf("%s (%d failed)\n", failures == 0 ? "PASS" : "FAIL", failures);
+    const Sweep s = sweep(cache, table);
+    std::printf("  index 12 fingerprint 0x%016llx (pins taken at 0x%016llx)%s\n",
+                static_cast<unsigned long long>(s.fingerprint), static_cast<unsigned long long>(kPinnedFingerprint),
+                caller ? ", table from NXTCACHE_CS2_OPCODES" : "");
+    checkSweep(s, caller.has_value(), kPinnedFingerprint);
+    testGates(cache, table, s.fingerprint);
+    std::printf("%s (%d failed, %d skipped)\n", failures == 0 ? "PASS" : "FAIL", failures, skipped);
     return failures == 0 ? 0 : 1;
 }
 

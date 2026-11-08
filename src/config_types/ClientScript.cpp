@@ -237,6 +237,24 @@ std::optional<size_t> decodeFooter(const uint8_t *data, size_t size, ClientScrip
     return streamEnd;
 }
 
+// entry[key] as a u16, or nullopt unless it is a JSON integer in 0..65535
+// (no floats, booleans, strings, or values that only fit after narrowing).
+std::optional<int> u16Field(const nlohmann::json &entry, const char *key)
+{
+    const auto it = entry.find(key);
+    if (it == entry.end() || !it->is_number_integer())
+    {
+        return std::nullopt;
+    }
+    if (it->is_number_unsigned())
+    {
+        const uint64_t v = it->get<uint64_t>();
+        return v <= 0xFFFF ? std::optional<int>(static_cast<int>(v)) : std::nullopt;
+    }
+    const int64_t v = it->get<int64_t>();
+    return v >= 0 && v <= 0xFFFF ? std::optional<int>(static_cast<int>(v)) : std::nullopt;
+}
+
 // u8 type, then 0: i32, 1: i64, 2: string, 3+: nothing.
 bool decodeTypedConstant(Reader &stream, Instruction &insn)
 {
@@ -439,28 +457,43 @@ std::optional<OpcodeTable> parseOpcodeTable(std::string_view json, std::string *
             return fail("expected a JSON array of opcode objects");
         }
         OpcodeTable table;
-        for (const auto &entry : doc)
+        for (size_t row = 0; row < doc.size(); row++)
         {
-            const int opcode = entry.at("opcode").get<int>();
-            const std::string operand = entry.at("operand").get<std::string>();
-            const auto kind = parseOperandKind(operand);
+            const auto &entry = doc[row];
+            const std::string where = "entry " + std::to_string(row) + ": ";
+            if (!entry.is_object())
+            {
+                return fail(where + "not an object");
+            }
+            const std::optional<int> opcode = u16Field(entry, "opcode");
+            if (!opcode)
+            {
+                return fail(where + "\"opcode\" must be an integer 0..65535");
+            }
+            const auto operand = entry.find("operand");
+            if (operand == entry.end() || !operand->is_string())
+            {
+                return fail(where + "\"operand\" must be a string");
+            }
+            const auto kind = parseOperandKind(operand->get<std::string>());
             if (!kind)
             {
-                return fail("opcode " + std::to_string(opcode) + ": unknown operand kind \"" + operand + "\"");
-            }
-            if (opcode < 0 || opcode > 0xFFFF)
-            {
-                return fail("opcode " + std::to_string(opcode) + " is not a u16");
+                return fail(where + "unknown operand kind " + operand->dump());
             }
             OpcodeSpec spec;
             spec.operand = *kind;
-            if (entry.contains("name") && entry["name"].is_string())
+            const auto name = entry.find("name");
+            if (name != entry.end() && !name->is_null())
             {
-                spec.name = entry["name"].get<std::string>();
+                if (!name->is_string())
+                {
+                    return fail(where + "\"name\" must be a string");
+                }
+                spec.name = name->get<std::string>();
             }
-            if (!table.ops.emplace(opcode, std::move(spec)).second)
+            if (!table.ops.emplace(*opcode, std::move(spec)).second)
             {
-                return fail("opcode " + std::to_string(opcode) + " is listed twice");
+                return fail(where + "opcode " + std::to_string(*opcode) + " is listed twice");
             }
         }
         return table;

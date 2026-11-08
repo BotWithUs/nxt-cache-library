@@ -2238,24 +2238,24 @@ nxt_result nxt_get_stats_json(nxt_cache *handle, char **out_json, size_t *out_le
     }
 }
 
+}  // extern "C"
+
+// The opaque C handle behind nxt_cs2_table: a parsed opcode table, immutable
+// after nxt_cs2_table_open.
+struct nxt_cs2_table
+{
+    cs2::OpcodeTable table;
+};
+
+extern "C" {
+
 namespace {
 
-// Shared tail of the two clientscript entry points: table parse, decode, JSON.
-nxt_result clientScriptToJson(const uint8_t *data, size_t size, int id, const char *opcodesJson,
+// Shared tail of the two clientscript entry points: decode, JSON.
+nxt_result clientScriptToJson(const uint8_t *data, size_t size, int id, const nxt_cs2_table *table,
                               char **outJson, size_t *outLen)
 {
-    std::optional<cs2::OpcodeTable> table;
-    if (opcodesJson)
-    {
-        std::string error;
-        table = cs2::parseOpcodeTable(opcodesJson, &error);
-        if (!table)
-        {
-            setError("bad opcodes_json: " + error);
-            return NXT_ERR_INVALID;
-        }
-    }
-    const cs2::OpcodeTable *tablePtr = table ? &*table : nullptr;
+    const cs2::OpcodeTable *tablePtr = table ? &table->table : nullptr;
     cs2::ClientScript script = cs2::decodeClientScript(id, data, size, tablePtr);
     const std::string text = nxtdump::toJson(script, tablePtr)
                                  .dump(-1, ' ', false, json::error_handler_t::replace);
@@ -2272,7 +2272,37 @@ nxt_result clientScriptToJson(const uint8_t *data, size_t size, int id, const ch
 
 }  // namespace
 
-nxt_result nxt_get_clientscript_json(nxt_cache *handle, int id, const char *opcodes_json,
+nxt_cs2_table *nxt_cs2_table_open(const char *opcodes_json)
+{
+    if (!opcodes_json)
+    {
+        setError("invalid argument: null opcodes_json");
+        return nullptr;
+    }
+    try
+    {
+        std::string error;
+        std::optional<cs2::OpcodeTable> parsed = cs2::parseOpcodeTable(opcodes_json, &error);
+        if (!parsed)
+        {
+            setError("bad opcodes_json: " + error);
+            return nullptr;
+        }
+        return new nxt_cs2_table{std::move(*parsed)};
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("cs2_table_open failed: ") + e.what());
+        return nullptr;
+    }
+}
+
+void nxt_cs2_table_free(nxt_cs2_table *table)
+{
+    delete table;
+}
+
+nxt_result nxt_get_clientscript_json(nxt_cache *handle, int id, const nxt_cs2_table *table,
                                      char **out_json, size_t *out_len)
 {
     if (!handle || !out_json || !out_len)
@@ -2296,7 +2326,7 @@ nxt_result nxt_get_clientscript_json(nxt_cache *handle, int id, const char *opco
             return NXT_ERR_NOT_FOUND;
         }
         const auto *data = reinterpret_cast<const uint8_t *>(buffer.buffer + buffer.readPosition);
-        return clientScriptToJson(data, buffer.remaining(), id, opcodes_json, out_json, out_len);
+        return clientScriptToJson(data, buffer.remaining(), id, table, out_json, out_len);
     }
     catch (const std::bad_alloc &)
     {
@@ -2311,7 +2341,7 @@ nxt_result nxt_get_clientscript_json(nxt_cache *handle, int id, const char *opco
 }
 
 nxt_result nxt_decode_clientscript_json(const uint8_t *data, size_t size, int id,
-                                        const char *opcodes_json,
+                                        const nxt_cs2_table *table,
                                         char **out_json, size_t *out_len)
 {
     if ((!data && size != 0) || !out_json || !out_len)
@@ -2321,7 +2351,7 @@ nxt_result nxt_decode_clientscript_json(const uint8_t *data, size_t size, int id
     }
     try
     {
-        return clientScriptToJson(data, size, id, opcodes_json, out_json, out_len);
+        return clientScriptToJson(data, size, id, table, out_json, out_len);
     }
     catch (const std::exception &e)
     {
