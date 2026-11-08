@@ -18,6 +18,8 @@ built on top.
 - **Decode config types** — npc, item, loc, seq, varbit, enum, struct, inv,
   param, quest, underlay, overlay, worldmap, dbrow, interfaces, sprites,
   models, gamevals, stat (skill) definitions, and map/loc spawns.
+- **Disassemble clientscripts** — decode CS2 scripts (index 12) into header,
+  instructions and switch tables, given a per-revision opcode table.
 - **Build map-square clip grids** — directional per-tile collision flags plus
   the interactable scenery crossings that sit alongside them, for pathfinding
   consumers.
@@ -80,7 +82,22 @@ nxtcache-dumper --type itemicon --id 4151 --cache /path/to/jcache \
 # bake the Java host's gameval.sqlite (name index, schema v1) from the local
 # cache; live caches ship the gameval index (67) from 951-1 on
 nxtcache-dumper --type gameval --cache /path/to/jcache --sqlite gameval.sqlite
+
+# disassemble every CS2 clientscript (index 12), one file per script
+nxtcache-dumper --type clientscript --cache /path/to/jcache \
+                --opcodes opcodes.json --out-dir ./scripts
+
+# which scripts use opcodes 940 or 1271
+nxtcache-dumper --type clientscript --cache /path/to/jcache \
+                --opcodes opcodes.json --grep-op 940,1271
 ```
+
+Clientscript opcode numbers are reshuffled with every client build, so the
+library holds no opcode table. `--opcodes` takes a per-revision JSON array of
+`{ "opcode", "operand", "name"? }` objects, where `operand` is `byte`, `int`,
+`var`, `varbit` or `typed_constant`. The table supplies the operand widths, so
+instructions decode only with it; `--no-names` keeps it for widths and prints
+raw opcode numbers.
 
 `--help` lists every type and option.
 

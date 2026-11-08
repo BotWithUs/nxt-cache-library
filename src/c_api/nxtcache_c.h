@@ -850,8 +850,16 @@ NXT_API nxt_result nxt_get_stats_json(nxt_cache *cache, char **out_json, size_t 
  *
  * The result is JSON: { "id", "name" (null when absent), "args" {int,string,
  * long}, "locals" {int,string,long}, "instructionCount", "complete",
- * "instructions": [{ "index", "byteOffset", "opcode", "name"?, "operandKind"?,
- * "operand"? }], "switches": [[{ "value", "target" }]], "failure"?, "error"? }.
+ * "instructions": [{ "index", "byteOffset", "opcode", "name"?, "operandKind",
+ * "constantType"?, "operand" }], "switches": [[{ "value", "target" }]],
+ * "failure"?, "error"? }. operandKind is byte | int | var | varbit |
+ * typed_constant; a var operand is { domain, id, flag }, a varbit operand
+ * { id, flag }, a typed constant carries constantType int | long | string |
+ * other. An instruction whose opcode is not in the table has "known": false
+ * and no operand, and is always the last one.
+ *
+ * opcodes_json is a JSON array of { "opcode", "operand", "name"? } objects
+ * (extra fields ignored), operand naming one of the kinds above.
  *
  * A script that stops decoding early (an opcode missing from the table, so its
  * operand width is unknown, or truncated data) is still NXT_OK: "complete" is

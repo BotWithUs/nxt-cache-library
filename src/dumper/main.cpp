@@ -103,11 +103,13 @@ void usage(const char *prog)
         << "clientscript (one instruction per line: index opcode [name] operand):\n"
         << "  --opcodes <file>    Per-revision opcodes.json: operand kinds (needed to\n"
         << "                      decode instructions) and names. Without it only the\n"
-        << "                      header and switch tables decode.\n"
+        << "                      footer, switch tables and name decode.\n"
+        << "  --no-names          Print raw opcode numbers only (the --opcodes table\n"
+        << "                      still supplies operand widths)\n"
         << "  --json              JSON instead of assembly text\n"
         << "  --out-dir <path>    One <id>.cs2asm (or <id>.json) per script\n"
-        << "  --grep-op <n[,n]>   List the scripts that use any of these opcodes, with\n"
-        << "                      a use count per opcode\n"
+        << "  --grep-op <n[,n]>   List the scripts that use any of these opcodes, one\n"
+        << "                      line each: <id>  <opcode>[:<name>]=<uses> ...\n"
         << "  --help              Show this message\n";
 }
 
@@ -497,6 +499,7 @@ int main(int argc, char **argv)
     bool jsonOut = false;                     // clientscript: JSON, not assembly
     std::string opcodesPath;                  // clientscript: opcodes.json
     std::string grepOpsArg;                   // clientscript: --grep-op list
+    bool noNames = false;                     // clientscript: widths only from the table
     int iconW = 64, iconH = 64, iconSS = 4;   // --type itemicon output size + SSAA
     std::string iconBg;                       // itemicon background: "" = transparent, else RRGGBB
     std::optional<int> ovXan, ovYan, ovZan, ovZoom;  // itemicon rotation/zoom overrides (debug)
@@ -556,6 +559,7 @@ int main(int argc, char **argv)
         else if (a == "--json")     jsonOut         = true;
         else if (a == "--opcodes")  opcodesPath     = takeArg(i, "--opcodes");
         else if (a == "--grep-op")  grepOpsArg      = takeArg(i, "--grep-op");
+        else if (a == "--no-names") noNames         = true;
         else
         {
             std::cerr << "Unknown argument: " << a << "\n\n";
@@ -668,6 +672,7 @@ int main(int argc, char **argv)
         cs.id = id;
         cs.limit = limit;
         cs.opcodesPath = opcodesPath;
+        cs.isNoNames = noNames;
         cs.isJson = jsonOut;
         cs.isPretty = pretty;
         cs.outPath = outPath;
@@ -679,9 +684,9 @@ int main(int argc, char **argv)
         }
         return nxtdump::runClientScriptDump(*cache, cs);
     }
-    if (jsonOut || !opcodesPath.empty() || !grepOpsArg.empty())
+    if (jsonOut || noNames || !opcodesPath.empty() || !grepOpsArg.empty())
     {
-        std::cerr << "--json, --opcodes and --grep-op only apply to --type clientscript\n";
+        std::cerr << "--json, --opcodes, --no-names and --grep-op only apply to --type clientscript\n";
         return 2;
     }
 

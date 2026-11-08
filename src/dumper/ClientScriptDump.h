@@ -12,7 +12,8 @@ struct ClientScriptDumpOptions
 {
     std::optional<int> id;           // one script, else every script in index 12
     std::optional<int> limit;        // cap on scripts visited
-    std::string opcodesPath;         // opcodes.json; empty = raw numbers only
+    std::string opcodesPath;         // opcodes.json: operand widths and names
+    bool isNoNames{false};           // use the table for widths only
     std::vector<int> grepOps;        // non-empty: list scripts using any of these
     bool isJson{false};              // JSON instead of assembly text
     bool isPretty{false};

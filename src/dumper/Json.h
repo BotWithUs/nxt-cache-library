@@ -944,17 +944,35 @@ inline json toJson(const cs2::ClientScript &s, const cs2::OpcodeTable *table)
         {
             j["name"] = spec->name;
         }
-        if (i.operand != cs2::OperandKind::None)
+        if (!i.isKnown)
         {
-            j["operandKind"] = std::string(cs2::operandKindName(i.operand));
-            if (i.operand == cs2::OperandKind::String)
-            {
-                j["operand"] = i.stringOperand;
-            }
-            else
-            {
+            j["known"] = false;
+            insns.push_back(std::move(j));
+            continue;
+        }
+        j["operandKind"] = std::string(cs2::operandKindName(i.operand));
+        switch (i.operand)
+        {
+            case cs2::OperandKind::Var:
+                j["operand"] = {{"domain", i.varDomain}, {"id", i.varId}, {"flag", i.intOperand}};
+                break;
+            case cs2::OperandKind::Varbit:
+                j["operand"] = {{"id", i.varId}, {"flag", i.intOperand}};
+                break;
+            case cs2::OperandKind::TypedConstant:
+                j["constantType"] = std::string(cs2::constantTypeName(i.constant));
+                if (i.constant == cs2::ConstantType::String)
+                {
+                    j["operand"] = i.stringOperand;
+                }
+                else
+                {
+                    j["operand"] = i.intOperand;
+                }
+                break;
+            default:
                 j["operand"] = i.intOperand;
-            }
+                break;
         }
         insns.push_back(std::move(j));
     }

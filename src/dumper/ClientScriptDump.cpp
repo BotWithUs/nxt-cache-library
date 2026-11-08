@@ -152,7 +152,7 @@ struct Tally
             return;
         }
         failures[std::string(cs2::decodeFailureName(script.failure))]++;
-        if (script.failure == cs2::DecodeFailure::UnknownOpcode && !script.instructions.empty())
+        if (!script.instructions.empty() && !script.instructions.back().isKnown)
         {
             unknownOpcodes[script.instructions.back().opcode]++;
         }
@@ -217,6 +217,8 @@ int runClientScriptDump(CacheSource &cache, const ClientScriptDumpOptions &optio
         }
     }
     const cs2::OpcodeTable *tablePtr = table ? &*table : nullptr;
+    // The table always supplies operand widths; names only without --no-names.
+    const cs2::OpcodeTable *nameTable = options.isNoNames ? nullptr : tablePtr;
     const std::set<int> wanted(options.grepOps.begin(), options.grepOps.end());
     const bool isGrep = !wanted.empty();
 
@@ -286,19 +288,19 @@ int runClientScriptDump(CacheSource &cache, const ClientScriptDumpOptions &optio
             out << script->id;
             for (const auto &[opcode, count] : hits)
             {
-                const cs2::OpcodeSpec *spec = tablePtr ? tablePtr->find(opcode) : nullptr;
+                const cs2::OpcodeSpec *spec = nameTable ? nameTable->find(opcode) : nullptr;
                 out << "  " << opcode;
                 if (spec && !spec->name.empty())
                 {
                     out << ":" << spec->name;
                 }
-                out << "x" << count;
+                out << "=" << count;
             }
             out << (script->isComplete() ? "" : "  (partial decode)") << "\n";
             continue;
         }
 
-        std::string text = renderScript(*script, tablePtr, options);
+        std::string text = renderScript(*script, nameTable, options);
         if (!options.outDir.empty())
         {
             auto path = std::filesystem::path(options.outDir) /
