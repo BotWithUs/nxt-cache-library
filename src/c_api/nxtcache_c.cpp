@@ -3,6 +3,7 @@
 #include "c_api/nxtcache_c.h"
 #include "c_api/Js5ServerConfig.h"
 
+#include "config_types/ClientScript.h"
 #include "config_types/GameVal.h"
 #include "config_types/GameValDb.h"
 #include "config_types/InterfaceTypes.h"
@@ -2234,6 +2235,128 @@ nxt_result nxt_get_stats_json(nxt_cache *handle, char **out_json, size_t *out_le
     {
         setError(std::string("get_stats_json failed: ") + e.what());
         return NXT_ERR_IO;
+    }
+}
+
+}  // extern "C"
+
+// The opaque C handle behind nxt_cs2_table: a parsed opcode table, immutable
+// after nxt_cs2_table_open.
+struct nxt_cs2_table
+{
+    cs2::OpcodeTable table;
+};
+
+extern "C" {
+
+namespace {
+
+// Shared tail of the two clientscript entry points: decode, JSON.
+nxt_result clientScriptToJson(const uint8_t *data, size_t size, int id, const nxt_cs2_table *table,
+                              char **outJson, size_t *outLen)
+{
+    const cs2::OpcodeTable *tablePtr = table ? &table->table : nullptr;
+    cs2::ClientScript script = cs2::decodeClientScript(id, data, size, tablePtr);
+    const std::string text = nxtdump::toJson(script, tablePtr)
+                                 .dump(-1, ' ', false, json::error_handler_t::replace);
+    char *buf = dupString(text);
+    if (!buf)
+    {
+        setError("malloc failed");
+        return NXT_ERR_INTERNAL;
+    }
+    *outJson = buf;
+    *outLen = text.size();
+    return NXT_OK;
+}
+
+}  // namespace
+
+nxt_cs2_table *nxt_cs2_table_open(const char *opcodes_json)
+{
+    if (!opcodes_json)
+    {
+        setError("invalid argument: null opcodes_json");
+        return nullptr;
+    }
+    try
+    {
+        std::string error;
+        std::optional<cs2::OpcodeTable> parsed = cs2::parseOpcodeTable(opcodes_json, &error);
+        if (!parsed)
+        {
+            setError("bad opcodes_json: " + error);
+            return nullptr;
+        }
+        return new nxt_cs2_table{std::move(*parsed)};
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("cs2_table_open failed: ") + e.what());
+        return nullptr;
+    }
+}
+
+void nxt_cs2_table_free(nxt_cs2_table *table)
+{
+    delete table;
+}
+
+nxt_result nxt_get_clientscript_json(nxt_cache *handle, int id, const nxt_cs2_table *table,
+                                     char **out_json, size_t *out_len)
+{
+    if (!handle || !out_json || !out_len)
+    {
+        setError("invalid argument: null handle or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    auto *c = reinterpret_cast<Cache *>(handle);
+    try
+    {
+        Archive &archive = c->source->archive(cs2::kClientScriptIndex, id);
+        if (archive.id == -1)
+        {
+            setError("clientscript " + std::to_string(id) + " not found");
+            return NXT_ERR_NOT_FOUND;
+        }
+        RSBuffer buffer = archive.readFile(0);
+        if (buffer.buffer == nullptr || buffer.remaining() == 0)
+        {
+            setError("clientscript " + std::to_string(id) + " has no file 0");
+            return NXT_ERR_NOT_FOUND;
+        }
+        const auto *data = reinterpret_cast<const uint8_t *>(buffer.buffer + buffer.readPosition);
+        return clientScriptToJson(data, buffer.remaining(), id, table, out_json, out_len);
+    }
+    catch (const std::bad_alloc &)
+    {
+        setError("out of memory");
+        return NXT_ERR_INTERNAL;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("get_clientscript_json failed: ") + e.what());
+        return NXT_ERR_IO;
+    }
+}
+
+nxt_result nxt_decode_clientscript_json(const uint8_t *data, size_t size, int id,
+                                        const nxt_cs2_table *table,
+                                        char **out_json, size_t *out_len)
+{
+    if ((!data && size != 0) || !out_json || !out_len)
+    {
+        setError("invalid argument: null data or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    try
+    {
+        return clientScriptToJson(data, size, id, table, out_json, out_len);
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("decode_clientscript_json failed: ") + e.what());
+        return NXT_ERR_INTERNAL;
     }
 }
 

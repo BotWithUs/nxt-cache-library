@@ -115,6 +115,8 @@ set(NXTCache_SOURCES
 	"src/c_api/Js5ServerConfig.h"
 	"src/c_api/nxtcache_c.cpp"
 	"src/c_api/nxtcache_c.h"
+	"src/config_types/ClientScript.cpp"
+	"src/config_types/ClientScript.h"
 	"src/config_types/GameVal.h"
 	"src/config_types/GameValDb.cpp"
 	"src/config_types/GameValDb.h"
@@ -207,6 +209,8 @@ set_target_properties(NXTCache PROPERTIES
 if(NXTCACHE_BUILD_DUMPER) # build-dumper
 	set(nxtcache-dumper_SOURCES
 		cmake.toml
+		"src/dumper/ClientScriptDump.cpp"
+		"src/dumper/ClientScriptDump.h"
 		"src/dumper/Json.h"
 		"src/dumper/main.cpp"
 	)
@@ -630,5 +634,42 @@ if(NXTCACHE_BUILD_TESTS) # build-tests
 	add_test(NAME if_stats_offline COMMAND nxtcache-if-stats-test --offline)
 	add_test(NAME if_stats COMMAND nxtcache-if-stats-test)
 	set_tests_properties(if_stats PROPERTIES SKIP_RETURN_CODE 77)
+
+endif()
+# Target: nxtcache-clientscript-test
+if(NXTCACHE_BUILD_TESTS) # build-tests
+	set(nxtcache-clientscript-test_SOURCES
+		cmake.toml
+		"src/tests/test_clientscript.cpp"
+	)
+
+	add_executable(nxtcache-clientscript-test)
+
+	target_sources(nxtcache-clientscript-test PRIVATE ${nxtcache-clientscript-test_SOURCES})
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${nxtcache-clientscript-test_SOURCES})
+
+	target_compile_features(nxtcache-clientscript-test PRIVATE
+		cxx_std_20
+	)
+
+	target_include_directories(nxtcache-clientscript-test PRIVATE
+		src
+	)
+
+	target_link_libraries(nxtcache-clientscript-test PRIVATE
+		NXTCache
+		nlohmann_json::nlohmann_json
+	)
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT nxtcache-clientscript-test)
+	endif()
+
+	set(CMKR_TARGET nxtcache-clientscript-test)
+	enable_testing()
+	add_test(NAME clientscript_offline COMMAND nxtcache-clientscript-test --offline)
+	add_test(NAME clientscript COMMAND nxtcache-clientscript-test)
+	set_tests_properties(clientscript PROPERTIES SKIP_RETURN_CODE 77)
 
 endif()
