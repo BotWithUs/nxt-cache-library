@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <utility>
 #include <variant>
@@ -19,6 +20,12 @@ public:
     int domainType{};
     int msb{};
     int lsb{};
+    // Opcode 16, a payload-less flag. Its meaning is not established; on the 951 cache it
+    // closes 186 records (ids 59651-61852), always right before the terminator.
+    bool hasOp16{};
+
+    // The first opcode decode() did not recognise and stopped at, or -1.
+    int unknownOpcode{-1};
 
     explicit VarbitType() : id(-1) {}
 
@@ -189,6 +196,9 @@ public:
     std::vector<int> quests;
     std::map<int, std::variant<int, std::string>> params;
 
+    // The first opcode decode() did not recognise and stopped at, or -1.
+    int unknownOpcode{-1};
+
     explicit ItemType() : id(-1), componentOptions(5), groundOptions(5), stackIDs(10) {}
 
     void decode(RSBuffer &buffer);
@@ -203,6 +213,9 @@ public:
     bool autoDisable = true;
     int32_t defaultInt{};
 
+    // The first opcode decode() did not recognise and stopped at, or -1.
+    int unknownOpcode{-1};
+
     explicit ParamType() : id(-1), type(nullptr) {}
 
     void decode(RSBuffer &buffer);
@@ -215,6 +228,12 @@ public:
     int capacity;
     std::vector<int> stackIds{};
     std::vector<int> stackAmounts{};
+    // Opcode 24, a payload-less flag. Its meaning is not established; on the 951 cache it
+    // closes 9 records, always right after opcode 2 and before the terminator.
+    bool hasOp24{};
+
+    // The first opcode decode() did not recognise and stopped at, or -1.
+    int unknownOpcode{-1};
 
     explicit InventoryType() : id(-1), capacity(0) {}
 
@@ -232,6 +251,9 @@ public:
     int entryCount{};
     std::map<int, std::variant<int, std::string>> entries;
 
+    // The first opcode decode() did not recognise and stopped at, or -1.
+    int unknownOpcode{-1};
+
     explicit EnumType() : id(-1) {}
 
     void decode(RSBuffer &buffer);
@@ -242,6 +264,9 @@ class StructType
 public:
     int id;
     std::map<int, std::variant<int, std::string>> params;
+
+    // The first opcode decode() did not recognise and stopped at, or -1.
+    int unknownOpcode{-1};
 
     explicit StructType() : id(-1) {}
 
@@ -265,7 +290,13 @@ public:
     int replayMode{};
     bool tweened{};
     int newFramesId{-1};
+    // Opcode 27: one unsigned byte, or -1 when absent. Its meaning is not established; on
+    // the 951 cache all 616 carriers hold 0xFE or 0xFF.
+    int op27{-1};
     std::map<int, std::variant<int, std::string>> params;
+
+    // The first opcode decode() did not recognise and stopped at, or -1.
+    int unknownOpcode{-1};
 
     explicit SequenceType() : id(-1) {}
 
@@ -319,6 +350,9 @@ public:
     int color{0};
     int texture{-1};
 
+    // The first opcode decode() did not recognise and stopped at, or -1.
+    int unknownOpcode{-1};
+
     explicit UnderlayType() : id(-1) {}
 
     void decode(RSBuffer &buffer);
@@ -333,6 +367,9 @@ public:
     int texture{-1};
     bool visible{true};
     bool isWater{false};
+
+    // The first opcode decode() did not recognise and stopped at, or -1.
+    int unknownOpcode{-1};
 
     explicit OverlayType() : id(-1) {}
 
@@ -361,6 +398,34 @@ public:
     int conditionMax{-1};
     std::map<int, std::variant<int, std::string>> params;
 
+    // Opcodes 250 and 251: a 24-bit varbit id, a 16-bit varp id (exactly one is set, the
+    // other is its all-ones "none" and decodes to -1), then g4 min and g4 max. They have
+    // the shape of opcodes 9 and 20 with a wider varbit id, and on the 951 cache 9 and 20
+    // no longer occur, but which is which is not established, so they stay separate.
+    struct VarCondition
+    {
+        int varbitId{-1};
+        int varpId{-1};
+        int min{};
+        int max{};
+    };
+    std::optional<VarCondition> op250;
+    std::optional<VarCondition> op251;
+
+    // Opcode 252: a 24-bit varbit id, a 16-bit varp id, a count byte, then count + 1 u16
+    // world map element ids -- opcode 26 with a wider varbit id. Every 951 carrier has a
+    // count of 1, so any other count is treated as an unknown layout and stops the decode.
+    struct VarSwitch
+    {
+        int varbitId{-1};
+        int varpId{-1};
+        std::vector<int> elementIds;
+    };
+    std::optional<VarSwitch> op252;
+
+    // The first opcode decode() did not recognise and stopped at, or -1.
+    int unknownOpcode{-1};
+
     explicit WorldMapElementType() : id(-1), options(5) {}
 
     void decode(RSBuffer &buffer);
@@ -380,6 +445,9 @@ public:
     int id;
     int tableId = -1;
     std::map<int, DbRowData> rows;
+
+    // The first opcode decode() did not recognise and stopped at, or -1.
+    int unknownOpcode{-1};
 
     explicit DbRowType() : id(-1) {}
 

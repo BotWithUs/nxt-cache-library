@@ -14,7 +14,9 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -30,6 +32,18 @@ inline json variantToJson(const std::variant<int, std::string> &v)
 inline json variantToJson(const DbCellValue &v)
 {
     return std::visit([](auto &&a) -> json { return a; }, v);
+}
+
+// Adds "unknownOpcode" only when the decode stopped at an opcode it does not know: every
+// field after that opcode is then missing, so a consumer must not read the gaps as absent.
+template<typename T>
+inline json withUnknownOpcode(const T &t, json doc)
+{
+    if (t.unknownOpcode != -1)
+    {
+        doc["unknownOpcode"] = t.unknownOpcode;
+    }
+    return doc;
 }
 
 template<typename V>
@@ -48,13 +62,14 @@ inline json intMapToJson(const std::map<int, V> &m)
 
 inline json toJson(const VarbitType &t)
 {
-    return {
+    return withUnknownOpcode(t, {
         {"id", t.id},
         {"varId", t.varId},
         {"domainType", t.domainType},
         {"msb", t.msb},
         {"lsb", t.lsb},
-    };
+        {"op16", t.hasOp16},
+    });
 }
 
 inline json toJson(const StatType &s)
@@ -129,7 +144,7 @@ inline json toJson(const VarPlayerType &t)
 
 inline json toJson(const NpcType &t)
 {
-    return {
+    return withUnknownOpcode(t, {
         {"id", t.id},
         {"name", t.name},
         {"options", t.options},
@@ -148,14 +163,14 @@ inline json toJson(const NpcType &t)
         {"rotate180Animation", t.rotate180Animation},
         {"rotate90RightAnimation", t.rotate90RightAnimation},
         {"rotate90LeftAnimation", t.rotate90LeftAnimation},
-    };
+    });
 }
 
 inline json toJson(const LocationType &t)
 {
     json cursors = json::array();
     for (int c: t.cursors) cursors.push_back(c);
-    return {
+    return withUnknownOpcode(t, {
         {"id", t.id},
         {"name", t.name},
         {"options", t.options},
@@ -175,7 +190,7 @@ inline json toJson(const LocationType &t)
         {"mapAreaId", t.mapAreaId},
         {"cursors", cursors},
         {"isMembers", t.isMembers},
-    };
+    });
 }
 
 inline json toJson(const ItemType &t)
@@ -190,7 +205,7 @@ inline json toJson(const ItemType &t)
         if (id == 0 && amt == 0) continue;
         stacks.push_back({{"id", id}, {"amount", amt}});
     }
-    return {
+    return withUnknownOpcode(t, {
         {"id", t.id},
         {"name", t.name},
         {"effect", t.effect},
@@ -261,35 +276,36 @@ inline json toJson(const ItemType &t)
         {"stackIDs", stacks},
         {"quests", t.quests},
         {"params", intMapToJson(t.params)},
-    };
+    });
 }
 
 inline json toJson(const ParamType &t)
 {
     json typeName = nullptr;
     if (t.type) typeName = t.type->getName();
-    return {
+    return withUnknownOpcode(t, {
         {"id", t.id},
         {"type", typeName},
         {"defaultString", t.defaultString},
         {"autoDisable", t.autoDisable},
         {"defaultInt", t.defaultInt},
-    };
+    });
 }
 
 inline json toJson(const InventoryType &t)
 {
-    return {
+    return withUnknownOpcode(t, {
         {"id", t.id},
         {"capacity", t.capacity},
         {"stackIds", t.stackIds},
         {"stackAmounts", t.stackAmounts},
-    };
+        {"op24", t.hasOp24},
+    });
 }
 
 inline json toJson(const EnumType &t)
 {
-    return {
+    return withUnknownOpcode(t, {
         {"id", t.id},
         {"inputTypeId", t.inputTypeId},
         {"outputTypeId", t.outputTypeId},
@@ -297,20 +313,20 @@ inline json toJson(const EnumType &t)
         {"stringDefault", t.stringDefault},
         {"entryCount", t.entryCount},
         {"entries", intMapToJson(t.entries)},
-    };
+    });
 }
 
 inline json toJson(const StructType &t)
 {
-    return {
+    return withUnknownOpcode(t, {
         {"id", t.id},
         {"params", intMapToJson(t.params)},
-    };
+    });
 }
 
 inline json toJson(const SequenceType &t)
 {
-    return {
+    return withUnknownOpcode(t, {
         {"id", t.id},
         {"frameLengths", t.frameLengths},
         {"frames", t.frames},
@@ -325,8 +341,9 @@ inline json toJson(const SequenceType &t)
         {"replayMode", t.replayMode},
         {"tweened", t.tweened},
         {"newFramesId", t.newFramesId},
+        {"op27", t.op27},
         {"params", intMapToJson(t.params)},
-    };
+    });
 }
 
 inline json toJson(const QuestType &t)
@@ -367,32 +384,55 @@ inline json toJson(const QuestType &t)
         {"varbitRequirements", requirementsToJson(t.varbitRequirements, "varbit")},
         {"params", intMapToJson(t.params)},
     };
-    // Present only when the decode stopped early: every field after that opcode is missing.
-    if (t.unknownOpcode != -1)
-    {
-        doc["unknownOpcode"] = t.unknownOpcode;
-    }
-    return doc;
+    return withUnknownOpcode(t, std::move(doc));
 }
 
 inline json toJson(const UnderlayType &t)
 {
-    return {
+    return withUnknownOpcode(t, {
         {"id", t.id},
         {"color", t.color},
         {"texture", t.texture},
-    };
+    });
 }
 
 inline json toJson(const OverlayType &t)
 {
-    return {
+    return withUnknownOpcode(t, {
         {"id", t.id},
         {"color", t.color},
         {"secondaryColor", t.secondaryColor},
         {"texture", t.texture},
         {"visible", t.visible},
         {"isWater", t.isWater},
+    });
+}
+
+// World map opcodes 250/251 and 252 as objects, or null when the record lacks them.
+inline json toJson(const std::optional<WorldMapElementType::VarCondition> &condition)
+{
+    if (!condition)
+    {
+        return nullptr;
+    }
+    return {
+        {"varbitId", condition->varbitId},
+        {"varpId", condition->varpId},
+        {"min", condition->min},
+        {"max", condition->max},
+    };
+}
+
+inline json toJson(const std::optional<WorldMapElementType::VarSwitch> &varSwitch)
+{
+    if (!varSwitch)
+    {
+        return nullptr;
+    }
+    return {
+        {"varbitId", varSwitch->varbitId},
+        {"varpId", varSwitch->varpId},
+        {"elementIds", varSwitch->elementIds},
     };
 }
 
@@ -400,7 +440,7 @@ inline json toJson(const WorldMapElementType &t)
 {
     json coords = json::array();
     for (const auto &[x, y]: t.coordinates) coords.push_back({x, y});
-    return {
+    return withUnknownOpcode(t, {
         {"id", t.id},
         {"spriteId", t.spriteId},
         {"spriteId2", t.spriteId2},
@@ -419,7 +459,10 @@ inline json toJson(const WorldMapElementType &t)
         {"conditionMin", t.conditionMin},
         {"conditionMax", t.conditionMax},
         {"params", intMapToJson(t.params)},
-    };
+        {"op250", toJson(t.op250)},
+        {"op251", toJson(t.op251)},
+        {"op252", toJson(t.op252)},
+    });
 }
 
 inline json toJson(const DbRowData &rd)
@@ -439,11 +482,11 @@ inline json toJson(const DbRowType &t)
     {
         rows[std::to_string(idx)] = toJson(rd);
     }
-    return {
+    return withUnknownOpcode(t, {
         {"id", t.id},
         {"tableId", t.tableId},
         {"rows", rows},
-    };
+    });
 }
 
 inline json toJson(const ComponentColorState &cs)

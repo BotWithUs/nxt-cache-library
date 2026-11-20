@@ -515,9 +515,20 @@ NXT_API nxt_result nxt_get_worldmap_elements(nxt_cache *cache,
  * caller frees *out_json with nxt_free. *out_len is the byte length minus
  * the trailing NUL. Returns NXT_ERR_NOT_FOUND if the id doesn't resolve.
  *
- * nxt_get_quest_json returns NXT_ERR_DECODE (naming the opcode in
- * nxt_last_error) when the quest carries an opcode the decoder does not know,
- * rather than a document missing every field after it. Its progressVarbits holds
+ * Every config getter here except sprite and model (npc, item, loc, seq,
+ * varbit, enum, struct, inv, param, quest, underlay, overlay, worldmap, dbrow)
+ * returns NXT_ERR_DECODE (naming the opcode in nxt_last_error) when the record
+ * carries an opcode the decoder does not know, rather than a document missing
+ * every field after it. nxt_dump_all_json still emits such a record, with an
+ * extra "unknownOpcode" key that is present only in that case.
+ *
+ * Opcodes pinned from the 951 cache, under new keys whose meaning is not
+ * established: varbit "op16" and inv "op24" (bool flags), seq "op27" (one
+ * unsigned byte, -1 when absent), worldmap "op250" / "op251" (null or
+ * {"varbitId", "varpId", "min", "max"}) and "op252" (null or
+ * {"varbitId", "varpId", "elementIds"}).
+ *
+ * The quest's progressVarbits holds
  * opcodes 4 and 22 alike; varpRequirements / varbitRequirements are opcodes
  * 18 / 19 as [{"varp"|"varbit": id, "min", "max", "description"}].
  */
