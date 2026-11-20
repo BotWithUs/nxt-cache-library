@@ -991,7 +991,7 @@ void readHeaderTrailer(Reader &r, InterfaceComponentDef &c)
     int v = c.version;
     if (v >= 6)
     {
-        c.triggerScriptRef = static_cast<int>(r.u32());
+        c.styleSheetId = static_cast<int>(r.u32());
     }
     if (v >= 9)
     {

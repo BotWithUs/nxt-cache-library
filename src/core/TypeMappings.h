@@ -59,6 +59,10 @@ inline const std::map<std::string, TypeMapping> &typeDefaults()
         // ClientScripts (CS2): index 12, one group per script id, the script in
         // file 0. Decoded by config_types/ClientScript.h, not the shard loader.
         {"clientscript", {"clientscript", 12, -1, 0}},
+        // Stylesheets (UI skins): index 60, one group per stylesheet id, the
+        // sheet in file 0. Decoded by config_types/StyleSheetType.h; the dumper
+        // loads every group because a sheet's resolved view walks its parents.
+        {"stylesheet", {"stylesheet", 60, -1, 0}},
     };
     return kDefaults;
 }

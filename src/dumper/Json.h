@@ -5,6 +5,7 @@
 #include "config_types/ModelType.h"
 #include "config_types/SpriteType.h"
 #include "config_types/StatType.h"
+#include "config_types/StyleSheetType.h"
 #include "config_types/Types.h"
 #include "config_types/VarPlayerType.h"
 
@@ -882,7 +883,7 @@ inline json toJson(const InterfaceComponentDef &c)
         {"yMode", c.yMode},
         {"parentScopeId", c.parentScopeId},
         {"interactFlag", c.interactFlag},
-        {"triggerScriptRef", c.triggerScriptRef},
+        {"styleSheetId", c.styleSheetId},
         {"miscByte", c.miscByte},
         {"eventMask", c.eventMask},
         {"options", options},
@@ -931,6 +932,56 @@ inline json toJson(const InterfaceDef &d)
         {"id", d.id},
         {"components", comps},
     };
+}
+
+// One stylesheet key: "key" is the property name, or null when the hash is
+// not a known name (see StyleSheetKeys.cpp); "hash" is the Java String.hashCode
+// the cache stores, signed, so it compares directly with String.hashCode().
+inline json styleSheetKeyJson(int32_t keyHash, int32_t value)
+{
+    const char *name = styleSheetKeyName(keyHash);
+    return {
+        {"key", name != nullptr ? json(name) : json(nullptr)},
+        {"hash", keyHash},
+        {"value", value},
+    };
+}
+
+// A stylesheet with its own entries in file order (duplicates kept; the first
+// wins) and, under "resolved", every key visible after the parent chain, in
+// hash order, each with the sheet that supplied it ("from"). `sheets` is the
+// whole index-60 set, needed for the parent walk.
+inline json toJson(const StyleSheetType &s, const std::map<int, StyleSheetType> &sheets)
+{
+    json entries = json::array();
+    for (const StyleSheetEntry &e : s.entries)
+    {
+        entries.push_back(styleSheetKeyJson(e.keyHash, e.value));
+    }
+    json resolved = json::array();
+    for (const auto &[hash, rv] : resolveStyleSheet(sheets, s.id))
+    {
+        json r = styleSheetKeyJson(hash, rv.value);
+        r["from"] = rv.sourceId;
+        resolved.push_back(std::move(r));
+    }
+    json out = {
+        {"id", s.id},
+        {"parentId", s.parentId},
+        {"decodeOk", s.isDecodeOk},
+        {"entryCount", static_cast<int>(s.entries.size())},
+        {"entries", std::move(entries)},
+        {"resolved", std::move(resolved)},
+    };
+    if (s.badValueType != -1)
+    {
+        out["badValueType"] = s.badValueType;
+    }
+    if (s.trailingBytes != 0)
+    {
+        out["trailingBytes"] = s.trailingBytes;
+    }
+    return out;
 }
 
 // Sprites and models serialise to metadata only — the bulk pixel/geometry data
