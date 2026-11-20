@@ -154,6 +154,8 @@ set(NXTCache_SOURCES
 	"src/gzip/version.hpp"
 	"src/maps/MapSquare.cpp"
 	"src/maps/MapSquare.h"
+	"src/maps/WorldMapElements.cpp"
+	"src/maps/WorldMapElements.h"
 	"src/network/HttpClient.cpp"
 	"src/network/HttpClient.h"
 	"src/network/Js5Archive.cpp"
@@ -487,6 +489,42 @@ if(NXTCACHE_BUILD_TESTS) # build-tests
 	enable_testing()
 	add_test(NAME mapsquare_locs COMMAND nxtcache-mapsquare-locs-test)
 	set_tests_properties(mapsquare_locs PROPERTIES SKIP_RETURN_CODE 77)
+
+endif()
+# Target: nxtcache-worldmap-elements-test
+if(NXTCACHE_BUILD_TESTS) # build-tests
+	set(nxtcache-worldmap-elements-test_SOURCES
+		cmake.toml
+		"src/tests/test_worldmap_elements.cpp"
+	)
+
+	add_executable(nxtcache-worldmap-elements-test)
+
+	target_sources(nxtcache-worldmap-elements-test PRIVATE ${nxtcache-worldmap-elements-test_SOURCES})
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${nxtcache-worldmap-elements-test_SOURCES})
+
+	target_compile_features(nxtcache-worldmap-elements-test PRIVATE
+		cxx_std_20
+	)
+
+	target_include_directories(nxtcache-worldmap-elements-test PRIVATE
+		src
+	)
+
+	target_link_libraries(nxtcache-worldmap-elements-test PRIVATE
+		NXTCache
+		nlohmann_json::nlohmann_json
+	)
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT nxtcache-worldmap-elements-test)
+	endif()
+
+	set(CMKR_TARGET nxtcache-worldmap-elements-test)
+	enable_testing()
+	add_test(NAME worldmap_elements COMMAND nxtcache-worldmap-elements-test)
+	set_tests_properties(worldmap_elements PROPERTIES SKIP_RETURN_CODE 77)
 
 endif()
 # Target: nxtcache-multiloc-doors-test
