@@ -212,7 +212,12 @@ struct InterfaceComponentDef
     bool isHidden{};            // interactFlag bit 0
 
     // Header, part 2 (after the tail)
-    int triggerScriptRef{-1};   // version >= 6
+    // version >= 6. The component's stylesheet (UI skin) id: a group of JS5
+    // index 60, see StyleSheetType.h. Stored as 4 bytes; the client keeps the
+    // low 16 bits signed at comp+0x8E (Component__SetStyleSheet, 951-4) and
+    // applies the sheet at decode. -1 = none. Named triggerScriptRef before
+    // the 951-4 RE (NXTLibrary claudedocs/plugin-ui-p2-map-951-4.md 12.4, 15.1).
+    int styleSheetId{-1};
     int miscByte{};             // version >= 9
     uint32_t eventMask{};       // u32 at version >= 6, 3 bytes before
     std::vector<ComponentOption> options;

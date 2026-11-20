@@ -17,7 +17,8 @@ built on top.
   as a transparent fallback for archives missing from a local cache.
 - **Decode config types** — npc, item, loc, seq, varbit, enum, struct, inv,
   param, quest, underlay, overlay, worldmap, dbrow, interfaces, sprites,
-  models, gamevals, stat (skill) definitions, and map/loc spawns.
+  models, gamevals, stylesheets (UI skins), stat (skill) definitions, and
+  map/loc spawns.
 - **Disassemble clientscripts** — decode CS2 scripts (index 12) into header,
   instructions and switch tables, given a per-revision opcode table.
 - **Build map-square clip grids** — directional per-tile collision flags plus
@@ -90,6 +91,9 @@ nxtcache-dumper --type clientscript --cache /path/to/jcache \
 # which scripts use opcodes 940 or 1271
 nxtcache-dumper --type clientscript --cache /path/to/jcache \
                 --opcodes opcodes.json --grep-op 940,1271
+
+# one stylesheet (UI skin, index 60) with its parent chain resolved
+nxtcache-dumper --type stylesheet --id 117 --cache /path/to/jcache --pretty
 ```
 
 Clientscript opcode numbers are reshuffled with every client build, so the
@@ -100,6 +104,48 @@ instructions decode only with it; `--no-names` keeps it for widths and prints
 raw opcode numbers.
 
 `--help` lists every type and option.
+
+### Stylesheets (index 60)
+
+A stylesheet is a UI skin: a parent id plus a list of `{key, value}` pairs that
+the client applies to a component (an Input field's background sprite, font,
+caret colour, margins, and so on). Each group of JS5 index 60 is one sheet, and
+the group id is the stylesheet id. The format, from the 951-4 client
+(`StyleSheet__Decode`), is:
+
+```
+i16 BE parentId                    -1 = none
+u16 BE count
+count x { u8 valueType             must be 0, or the client drops the sheet
+          i32 BE keyHash           Java String.hashCode of the property name
+          i32 BE value }
+```
+
+Inside a sheet the first entry for a key wins; a key the sheet lacks comes from
+its parent chain. `StyleSheetType` (`src/config_types/StyleSheetType.h`) decodes
+one sheet, and `resolveStyleSheetValue` / `resolveStyleSheet` apply the parent
+chain. `--type stylesheet` emits, per sheet:
+
+- `entries`: the sheet's own pairs in file order;
+- `resolved`: every key visible after the parent chain, with `from`, the sheet
+  that supplied it.
+
+Each pair carries `key` (the property name, e.g. `input.sprite`, or `null` when
+it is unknown), `hash` (signed, so it compares directly with Java's
+`String.hashCode()`), and `value`.
+
+Key names are not stored in the cache, only their hashes. The library knows 214
+names: every string in the 951-4 client binary whose hash appears in index 60.
+That covers 214 of the 235 distinct hashes in the 951-4 cache, with no hash
+matching two strings. The other 21 hashes match no client string, and the client
+never reads them, so they stay raw.
+
+Interface components name their skin in `InterfaceComponentDef::styleSheetId`
+(JSON `styleSheetId`, header version >= 6). That field was called
+`triggerScriptRef` until the 951-4 RE showed it is the stylesheet id: the client
+stores it at `comp+0x8E` and applies it through `Component__SetStyleSheet`. The
+cache stores it as 4 bytes, and the client keeps the low 16 bits, signed. The
+old JSON key `triggerScriptRef` is gone; no consumer read it.
 
 ### `nxtcache-mirror`
 

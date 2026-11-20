@@ -3,6 +3,7 @@
 #include "config_types/InterfaceTypes.h"
 #include "config_types/ModelType.h"
 #include "config_types/SpriteType.h"
+#include "config_types/StyleSheetType.h"
 #include "config_types/Types.h"
 #include "core/Archive.h"
 #include "core/CacheSource.h"
@@ -188,6 +189,47 @@ json dumpRange(CacheSource &cache, const TypeMapping &m,
                 }
             }
         }
+    }
+    return out;
+}
+
+// Stylesheets (index 60): every group is decoded, because a sheet's resolved
+// view walks its parent chain, then the requested id (or the first `limit`
+// ids) is emitted. A group with no file 0 is skipped.
+json dumpStyleSheets(CacheSource &cache, const TypeMapping &m,
+                     std::optional<int> singleId, std::optional<int> limit)
+{
+    std::map<int, StyleSheetType> sheets;
+    for (int aid : cache.archiveIds(m.indexId))
+    {
+        auto &archive = cache.archive(m.indexId, aid);
+        if (archive.id == -1)
+        {
+            continue;
+        }
+        auto buffer = archive.readFile(0);
+        if (buffer.buffer == nullptr)
+        {
+            continue;
+        }
+        StyleSheetType sheet;
+        sheet.id = aid;
+        sheet.decode(buffer);
+        sheets.emplace(aid, std::move(sheet));
+    }
+
+    json out = json::array();
+    for (const auto &[sid, sheet] : sheets)
+    {
+        if (singleId && sid != *singleId)
+        {
+            continue;
+        }
+        if (limit && static_cast<int>(out.size()) >= *limit)
+        {
+            break;
+        }
+        out.push_back(nxtdump::toJson(sheet, sheets));
     }
     return out;
 }
@@ -1181,6 +1223,7 @@ int main(int argc, char **argv)
         else if (typeName == "sprite")   out = dumpRange<SpriteType>(*cache, m, id, limit);
         else if (typeName == "model")    out = dumpRange<ModelType>(*cache, m, id, limit);
         else if (typeName == "dbrow")    out = dumpDbRows(*cache, m, id, limit);
+        else if (typeName == "stylesheet") out = dumpStyleSheets(*cache, m, id, limit);
         else if (typeName == "if")
         {
             // Per-archive sweep: one archive = one interface = N components.

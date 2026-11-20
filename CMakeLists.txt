@@ -130,6 +130,9 @@ set(NXTCache_SOURCES
 	"src/config_types/SpriteType.h"
 	"src/config_types/StatType.cpp"
 	"src/config_types/StatType.h"
+	"src/config_types/StyleSheetKeys.cpp"
+	"src/config_types/StyleSheetType.cpp"
+	"src/config_types/StyleSheetType.h"
 	"src/config_types/Types.cpp"
 	"src/config_types/Types.h"
 	"src/config_types/VarPlayerType.cpp"
@@ -709,5 +712,41 @@ if(NXTCACHE_BUILD_TESTS) # build-tests
 	add_test(NAME clientscript_offline COMMAND nxtcache-clientscript-test --offline)
 	add_test(NAME clientscript COMMAND nxtcache-clientscript-test)
 	set_tests_properties(clientscript PROPERTIES SKIP_RETURN_CODE 77)
+
+endif()
+# Target: nxtcache-stylesheet-test
+if(NXTCACHE_BUILD_TESTS) # build-tests
+	set(nxtcache-stylesheet-test_SOURCES
+		cmake.toml
+		"src/tests/test_stylesheet.cpp"
+	)
+
+	add_executable(nxtcache-stylesheet-test)
+
+	target_sources(nxtcache-stylesheet-test PRIVATE ${nxtcache-stylesheet-test_SOURCES})
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${nxtcache-stylesheet-test_SOURCES})
+
+	target_compile_features(nxtcache-stylesheet-test PRIVATE
+		cxx_std_20
+	)
+
+	target_include_directories(nxtcache-stylesheet-test PRIVATE
+		src
+	)
+
+	target_link_libraries(nxtcache-stylesheet-test PRIVATE
+		NXTCache
+	)
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT nxtcache-stylesheet-test)
+	endif()
+
+	set(CMKR_TARGET nxtcache-stylesheet-test)
+	enable_testing()
+	add_test(NAME stylesheet_offline COMMAND nxtcache-stylesheet-test --offline)
+	add_test(NAME stylesheet COMMAND nxtcache-stylesheet-test)
+	set_tests_properties(stylesheet PROPERTIES SKIP_RETURN_CODE 77)
 
 endif()
