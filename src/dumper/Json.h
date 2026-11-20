@@ -337,7 +337,16 @@ inline json toJson(const QuestType &t)
     for (const auto &v: t.progressVarbits) varbits.push_back({v[0], v[1], v[2]});
     json skills = json::array();
     for (const auto &[s, lvl]: t.skillRequirements) skills.push_back({{"skill", s}, {"level", lvl}});
-    return {
+    const auto requirementsToJson = [](const std::vector<QuestType::VarRequirement> &requirements, const char *idKey)
+    {
+        json out = json::array();
+        for (const auto &r: requirements)
+        {
+            out.push_back({{idKey, r.id}, {"min", r.min}, {"max", r.max}, {"description", r.description}});
+        }
+        return out;
+    };
+    json doc = {
         {"id", t.id},
         {"name", t.name},
         {"listName", t.listName},
@@ -354,8 +363,16 @@ inline json toJson(const QuestType &t)
         {"skillRequirements", skills},
         {"progressVarps", varps},
         {"progressVarbits", varbits},
+        {"varpRequirements", requirementsToJson(t.varpRequirements, "varp")},
+        {"varbitRequirements", requirementsToJson(t.varbitRequirements, "varbit")},
         {"params", intMapToJson(t.params)},
     };
+    // Present only when the decode stopped early: every field after that opcode is missing.
+    if (t.unknownOpcode != -1)
+    {
+        doc["unknownOpcode"] = t.unknownOpcode;
+    }
+    return doc;
 }
 
 inline json toJson(const UnderlayType &t)

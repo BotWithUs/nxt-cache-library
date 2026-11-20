@@ -39,6 +39,7 @@
 #include <new>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace {
@@ -215,6 +216,17 @@ nxt_result getJsonGeneric(nxt_cache *handle, const std::string &typeName, int id
         {
             setError(typeName + " " + std::to_string(id) + " not found");
             return NXT_ERR_NOT_FOUND;
+        }
+        // A quest that stops on an unknown opcode is missing every field after it, and a
+        // caller reading progress vars would take the gap for "not tracked". Fail instead.
+        if constexpr (std::is_same_v<T, QuestType>)
+        {
+            if (entry->unknownOpcode != -1)
+            {
+                setError(typeName + " " + std::to_string(id) + ": unknown opcode " +
+                         std::to_string(entry->unknownOpcode));
+                return NXT_ERR_DECODE;
+            }
         }
         json doc = nxtdump::toJson(*entry);
         std::string s = doc.dump();
