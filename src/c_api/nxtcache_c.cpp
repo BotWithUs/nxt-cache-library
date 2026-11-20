@@ -39,7 +39,6 @@
 #include <new>
 #include <optional>
 #include <string>
-#include <type_traits>
 #include <vector>
 
 namespace {
@@ -192,6 +191,24 @@ std::optional<T> decodeByName(CacheSource &cs, const char *name, int id)
     return decodeOne<T>(cs, it->second, id);
 }
 
+// A config that stopped on an unknown opcode is missing every field after it, and a
+// caller would take each gap for "absent" (a quest's progress var for "not tracked").
+// True, with nxt_last_error naming the opcode, when the single-record call must fail.
+template <typename T>
+bool failOnUnknownOpcode(const T &entry, const std::string &typeName, int id)
+{
+    if constexpr (requires { entry.unknownOpcode; })
+    {
+        if (entry.unknownOpcode != -1)
+        {
+            setError(typeName + " " + std::to_string(id) + ": unknown opcode " +
+                     std::to_string(entry.unknownOpcode));
+            return true;
+        }
+    }
+    return false;
+}
+
 template <typename T>
 nxt_result getJsonGeneric(nxt_cache *handle, const std::string &typeName, int id,
                           char **out_json, size_t *out_len)
@@ -217,16 +234,9 @@ nxt_result getJsonGeneric(nxt_cache *handle, const std::string &typeName, int id
             setError(typeName + " " + std::to_string(id) + " not found");
             return NXT_ERR_NOT_FOUND;
         }
-        // A quest that stops on an unknown opcode is missing every field after it, and a
-        // caller reading progress vars would take the gap for "not tracked". Fail instead.
-        if constexpr (std::is_same_v<T, QuestType>)
+        if (failOnUnknownOpcode(*entry, typeName, id))
         {
-            if (entry->unknownOpcode != -1)
-            {
-                setError(typeName + " " + std::to_string(id) + ": unknown opcode " +
-                         std::to_string(entry->unknownOpcode));
-                return NXT_ERR_DECODE;
-            }
+            return NXT_ERR_DECODE;
         }
         json doc = nxtdump::toJson(*entry);
         std::string s = doc.dump();
@@ -268,6 +278,10 @@ nxt_result getDbRowJson(nxt_cache *handle, int id, char **out_json, size_t *out_
         {
             setError("dbrow " + std::to_string(id) + " not found");
             return NXT_ERR_NOT_FOUND;
+        }
+        if (failOnUnknownOpcode(*row, "dbrow", id))
+        {
+            return NXT_ERR_DECODE;
         }
         json doc = nxtdump::toJson(*row);
         std::string s = doc.dump();

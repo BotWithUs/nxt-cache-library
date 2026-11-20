@@ -251,7 +251,8 @@ add_test(NAME multiloc_doors COMMAND nxtcache-multiloc-doors-test)
 set_tests_properties(multiloc_doors PROPERTIES SKIP_RETURN_CODE 77)
 """
 
-# Every npc and loc config in a real cache must end on opcode 0 with no unknown opcode.
+# Every config of every Types.h decoder in a real cache must end on opcode 0 with no
+# unknown opcode and no overrun; prints the per-type audit table.
 # Exit 77 = cache absent (SKIPPED).
 [target.nxtcache-config-decode-test]
 condition = "build-tests"

@@ -13,6 +13,9 @@ public:
     size_t capacity;
 
     bool ownsBuffer;
+    // Set when a read wanted more bytes than remained (the read returned 0, an empty
+    // tail or a clamped position). A decoder that ran past its record sets it.
+    bool hasOverrun{};
 
     explicit RSBuffer(char *buffer, size_t size)
             : buffer(buffer), writePosition(static_cast<unsigned int>(size)),
@@ -32,7 +35,8 @@ public:
               writePosition(other.writePosition),
               readPosition(other.readPosition),
               capacity(other.capacity),
-              ownsBuffer(false)
+              ownsBuffer(false),
+              hasOverrun(other.hasOverrun)
     {
         if (capacity > 0)
         {
@@ -66,6 +70,7 @@ public:
         writePosition = other.writePosition;
         readPosition = other.readPosition;
         ownsBuffer = (capacity > 0);
+        hasOverrun = other.hasOverrun;
 
         return *this;
     }
@@ -134,19 +139,19 @@ public:
 
     unsigned char readUnsignedByte()
     {
-        if (!canRead(1)) return 0;
+        if (!canRead(1)) { hasOverrun = true; return 0; }
         return static_cast<unsigned char>(buffer[readPosition++]);
     }
 
     char readByte()
     {
-        if (!canRead(1)) return 0;
+        if (!canRead(1)) { hasOverrun = true; return 0; }
         return buffer[readPosition++];
     }
 
     int readUnsignedShort()
     {
-        if (!canRead(2)) { readPosition = writePosition; return 0; }
+        if (!canRead(2)) { readPosition = writePosition; hasOverrun = true; return 0; }
         int byte1 = buffer[readPosition++] & 0xff;
         int byte2 = buffer[readPosition++] & 0xff;
         return (byte1 << 8) | byte2;
@@ -154,7 +159,7 @@ public:
 
     int readSmartInt()
     {
-        if (!canRead(1)) return 0;
+        if (!canRead(1)) { hasOverrun = true; return 0; }
         if (buffer[readPosition] < 0)
         {
             return readInt() & 0x7FFFFFFF;
@@ -166,7 +171,7 @@ public:
     // 32767 means "absent" and decodes to -1.
     int readBigSmart()
     {
-        if (!canRead(1)) return 0;
+        if (!canRead(1)) { hasOverrun = true; return 0; }
         if (buffer[readPosition] < 0)
         {
             return readInt() & 0x7FFFFFFF;
@@ -177,7 +182,7 @@ public:
 
     int readSmart()
     {
-        if (!canRead(1)) return 0;
+        if (!canRead(1)) { hasOverrun = true; return 0; }
         if ((buffer[readPosition] & 0xFF) < 128)
         {
             return readUnsignedByte();
@@ -187,7 +192,7 @@ public:
 
     int readInt()
     {
-        if (!canRead(4)) { readPosition = writePosition; return 0; }
+        if (!canRead(4)) { readPosition = writePosition; hasOverrun = true; return 0; }
         int byte1 = buffer[readPosition++] & 0xff;
         int byte2 = buffer[readPosition++] & 0xff;
         int byte3 = buffer[readPosition++] & 0xff;
@@ -197,7 +202,7 @@ public:
 
     int readMediumInt()
     {
-        if (!canRead(3)) { readPosition = writePosition; return 0; }
+        if (!canRead(3)) { readPosition = writePosition; hasOverrun = true; return 0; }
         int byte1 = buffer[readPosition++] & 0xff;
         int byte2 = buffer[readPosition++] & 0xff;
         int byte3 = buffer[readPosition++] & 0xff;
@@ -206,7 +211,7 @@ public:
 
     long long readLong()
     {
-        if (!canRead(8)) { readPosition = writePosition; return 0; }
+        if (!canRead(8)) { readPosition = writePosition; hasOverrun = true; return 0; }
         return  (long long) (buffer[readPosition++] & 0xff) << 56 |
                 (long long) (buffer[readPosition++] & 0xff) << 48 |
                 (long long) (buffer[readPosition++] & 0xff) << 40 |
@@ -226,7 +231,7 @@ public:
             0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x0000, 0x017E, 0x0178
         };
         std::string value;
-        unsigned char c;
+        unsigned char c = 1;
         while (readPosition < writePosition &&
                (c = static_cast<unsigned char>(buffer[readPosition++])) != 0)
         {
@@ -257,6 +262,10 @@ public:
                 value += static_cast<char>(0x80 | (cp & 0x3F));
             }
         }
+        if (c != 0)
+        {
+            hasOverrun = true;
+        }
         return value;
     }
 
@@ -268,7 +277,10 @@ public:
         do
         {
             if (remaining() < 1 || shift >= 35)
+            {
+                hasOverrun = hasOverrun || remaining() < 1;
                 return result;
+            }
             b = readUnsignedByte();
             result |= (b & 0x7F) << shift;
             shift += 7;
@@ -287,7 +299,7 @@ public:
     void skip(int length)
     {
         if (length < 0) return;
-        if (!canRead(static_cast<size_t>(length))) { readPosition = writePosition; return; }
+        if (!canRead(static_cast<size_t>(length))) { readPosition = writePosition; hasOverrun = true; return; }
         readPosition += length;
     }
 

@@ -1,6 +1,8 @@
 #include "config_types/Types.h"
 
 #include <algorithm>
+#include <optional>
+#include <tuple>
 #include <utility>
 
 namespace
@@ -96,6 +98,45 @@ void readQuestVarRequirements(RSBuffer &buffer, std::vector<QuestType::VarRequir
     }
 }
 
+// The 24-bit varbit id, 16-bit varp id pair that leads world map opcodes 250-252, with
+// each all-ones "none" decoded to -1.
+std::pair<int, int> readWorldMapVarPair(RSBuffer &buffer)
+{
+    constexpr int kNoVarbit = 0xFFFFFF;
+    constexpr int kNoVarp = 0xFFFF;
+    const int varbitId = buffer.readMediumInt();
+    const int varpId = buffer.readUnsignedShort();
+    return {varbitId == kNoVarbit ? -1 : varbitId, varpId == kNoVarp ? -1 : varpId};
+}
+
+WorldMapElementType::VarCondition readWorldMapVarCondition(RSBuffer &buffer)
+{
+    WorldMapElementType::VarCondition condition;
+    std::tie(condition.varbitId, condition.varpId) = readWorldMapVarPair(buffer);
+    condition.min = buffer.readInt();
+    condition.max = buffer.readInt();
+    return condition;
+}
+
+// Empty when the count byte is not the 1 every observed record carries: a wider list is
+// a layout the data has never shown, so the caller stops instead of guessing at it.
+std::optional<WorldMapElementType::VarSwitch> readWorldMapVarSwitch(RSBuffer &buffer)
+{
+    constexpr int kObservedCount = 1;
+    WorldMapElementType::VarSwitch varSwitch;
+    std::tie(varSwitch.varbitId, varSwitch.varpId) = readWorldMapVarPair(buffer);
+    const int count = buffer.readUnsignedByte();
+    if (count != kObservedCount)
+    {
+        return std::nullopt;
+    }
+    for (int i = 0; i <= count; i++)
+    {
+        varSwitch.elementIds.push_back(buffer.readUnsignedShort());
+    }
+    return varSwitch;
+}
+
 } // namespace
 
 void VarbitType::decode(RSBuffer &buffer)
@@ -116,6 +157,17 @@ void VarbitType::decode(RSBuffer &buffer)
         {
             lsb = buffer.readUnsignedByte();
             msb = buffer.readUnsignedByte();
+        }
+        else if (opcode == 16)
+        {
+            hasOp16 = true;
+        }
+        else
+        {
+            // An unknown opcode's payload width is unknown, so stop rather than read the
+            // rest of the record out of alignment as further opcodes.
+            unknownOpcode = opcode;
+            break;
         }
     }
 }
@@ -1222,6 +1274,13 @@ void ItemType::decode(RSBuffer &buffer)
                 }
             }
         }
+        else
+        {
+            // An unknown opcode's payload width is unknown, so stop rather than read the
+            // rest of the record out of alignment as further opcodes.
+            unknownOpcode = opcode;
+            break;
+        }
     }
 }
 
@@ -1253,6 +1312,13 @@ void ParamType::decode(RSBuffer &buffer)
         else if (opcode == 101)
         {
             type = ScriptVarType::getScriptVarTypeById(buffer.readSmart());
+        }
+        else
+        {
+            // An unknown opcode's payload width is unknown, so stop rather than read the
+            // rest of the record out of alignment as further opcodes.
+            unknownOpcode = opcode;
+            break;
         }
     }
 }
@@ -1292,6 +1358,17 @@ void InventoryType::decode(RSBuffer &buffer)
                 stackIds[i] = buffer.readMediumInt();
                 stackAmounts[i] = buffer.readUnsignedShort();
             }
+        }
+        else if (opcode == 24)
+        {
+            hasOp24 = true;
+        }
+        else
+        {
+            // An unknown opcode's payload width is unknown, so stop rather than read the
+            // rest of the record out of alignment as further opcodes.
+            unknownOpcode = opcode;
+            break;
         }
     }
 }
@@ -1362,6 +1439,13 @@ void EnumType::decode(RSBuffer &buffer)
         {
             outputTypeId = buffer.readSmart();
         }
+        else
+        {
+            // An unknown opcode's payload width is unknown, so stop rather than read the
+            // rest of the record out of alignment as further opcodes.
+            unknownOpcode = opcode;
+            break;
+        }
     }
 }
 
@@ -1390,6 +1474,13 @@ void StructType::decode(RSBuffer &buffer)
                     params[key] = buffer.readInt();
                 }
             }
+        }
+        else
+        {
+            // An unknown opcode's payload width is unknown, so stop rather than read the
+            // rest of the record out of alignment as further opcodes.
+            unknownOpcode = opcode;
+            break;
         }
     }
 }
@@ -1515,6 +1606,10 @@ void SequenceType::decode(RSBuffer &buffer)
         {
             buffer.skip(4);
         }
+        else if (opcode == 27)
+        {
+            op27 = buffer.readUnsignedByte();
+        }
         else if (opcode == 249)
         {
             int count = buffer.readUnsignedByte();
@@ -1531,6 +1626,13 @@ void SequenceType::decode(RSBuffer &buffer)
                     params[key] = buffer.readInt();
                 }
             }
+        }
+        else
+        {
+            // An unknown opcode's payload width is unknown, so stop rather than read the
+            // rest of the record out of alignment as further opcodes.
+            unknownOpcode = opcode;
+            break;
         }
     }
 }
@@ -1684,6 +1786,13 @@ void UnderlayType::decode(RSBuffer &buffer)
         else if (opcode == 4 || opcode == 5)
         {
         }
+        else
+        {
+            // An unknown opcode's payload width is unknown, so stop rather than read the
+            // rest of the record out of alignment as further opcodes.
+            unknownOpcode = opcode;
+            break;
+        }
     }
 }
 
@@ -1756,6 +1865,13 @@ void OverlayType::decode(RSBuffer &buffer)
         else if (opcode == 22)
         {
             buffer.skip(2);
+        }
+        else
+        {
+            // An unknown opcode's payload width is unknown, so stop rather than read the
+            // rest of the record out of alignment as further opcodes.
+            unknownOpcode = opcode;
+            break;
         }
     }
 }
@@ -1908,6 +2024,19 @@ void WorldMapElementType::decode(RSBuffer &buffer)
         {
             buffer.readUnsignedByte();
         }
+        else if (opcode == 250 || opcode == 251)
+        {
+            (opcode == 250 ? op250 : op251) = readWorldMapVarCondition(buffer);
+        }
+        else if (opcode == 252)
+        {
+            op252 = readWorldMapVarSwitch(buffer);
+            if (!op252)
+            {
+                unknownOpcode = opcode;
+                break;
+            }
+        }
         else if (opcode == 249)
         {
             int count = buffer.readUnsignedByte();
@@ -1920,6 +2049,13 @@ void WorldMapElementType::decode(RSBuffer &buffer)
                 else
                     params[key] = buffer.readInt();
             }
+        }
+        else
+        {
+            // An unknown opcode's payload width is unknown, so stop rather than read the
+            // rest of the record out of alignment as further opcodes.
+            unknownOpcode = opcode;
+            break;
         }
     }
 }
@@ -1996,6 +2132,13 @@ void DbRowType::decode(RSBuffer &buffer)
         else if (opcode == 4)
         {
             tableId = buffer.readVarInt();
+        }
+        else
+        {
+            // An unknown opcode's payload width is unknown, so stop rather than read the
+            // rest of the record out of alignment as further opcodes.
+            unknownOpcode = opcode;
+            break;
         }
     }
 }
