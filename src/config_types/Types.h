@@ -289,9 +289,23 @@ public:
     std::vector<int> startLocations;
     std::vector<int> dependentQuestIds;
     std::vector<std::pair<int, int>> skillRequirements;
+    // {var id, start value, end value}. progressVarbits holds both opcode 4 (16-bit
+    // varbit id) and opcode 22 (24-bit varbit id), which is the form the 951 cache uses.
     std::vector<std::array<int, 3>> progressVarps;
     std::vector<std::array<int, 3>> progressVarbits;
+    // Opcodes 18 (varp) and 19 (varbit): a var that must hold a value in [min, max].
+    struct VarRequirement
+    {
+        int id{};
+        int min{};
+        int max{};
+        std::string description;
+    };
+    std::vector<VarRequirement> varpRequirements;
+    std::vector<VarRequirement> varbitRequirements;
     std::map<int, std::variant<int, std::string>> params;
+    // The first opcode decode() did not recognise and stopped at, or -1.
+    int unknownOpcode{-1};
 
     explicit QuestType() : id(-1) {}
 

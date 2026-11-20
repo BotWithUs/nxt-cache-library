@@ -514,6 +514,12 @@ NXT_API nxt_result nxt_get_worldmap_elements(nxt_cache *cache,
  * decoded config entry. The shape matches the nxtcache-dumper output. The
  * caller frees *out_json with nxt_free. *out_len is the byte length minus
  * the trailing NUL. Returns NXT_ERR_NOT_FOUND if the id doesn't resolve.
+ *
+ * nxt_get_quest_json returns NXT_ERR_DECODE (naming the opcode in
+ * nxt_last_error) when the quest carries an opcode the decoder does not know,
+ * rather than a document missing every field after it. Its progressVarbits holds
+ * opcodes 4 and 22 alike; varpRequirements / varbitRequirements are opcodes
+ * 18 / 19 as [{"varp"|"varbit": id, "min", "max", "description"}].
  */
 
 NXT_API nxt_result nxt_get_npc_json     (nxt_cache *, int id, char **out_json, size_t *out_len);

@@ -1,6 +1,7 @@
 #include "config_types/Types.h"
 
 #include <algorithm>
+#include <utility>
 
 namespace
 {
@@ -64,6 +65,35 @@ void skipOverrideBlock(RSBuffer &buffer, bool isExtendedId)
         buffer.skip(buffer.readUnsignedByte() * 8);
     }
     buffer.skip(2);
+}
+
+// Quest opcodes 3, 4 and 22: a count, then {var id, start, end}. Opcode 22 is the
+// varbit form with a 24-bit id; 3 (varp) and 4 (varbit) carry a 16-bit id.
+void readQuestProgressVars(RSBuffer &buffer, bool isWideId, std::vector<std::array<int, 3>> &outVars)
+{
+    const int count = buffer.readUnsignedByte();
+    for (int i = 0; i < count; i++)
+    {
+        const int varId = isWideId ? buffer.readMediumInt() : buffer.readUnsignedShort();
+        const int start = buffer.readInt();
+        const int end = buffer.readInt();
+        outVars.push_back({varId, start, end});
+    }
+}
+
+// Quest opcodes 18 and 19: a count, then {g4 var id, g4 min, g4 max, string}.
+void readQuestVarRequirements(RSBuffer &buffer, std::vector<QuestType::VarRequirement> &outRequirements)
+{
+    const int count = buffer.readUnsignedByte();
+    for (int i = 0; i < count; i++)
+    {
+        QuestType::VarRequirement requirement;
+        requirement.id = buffer.readInt();
+        requirement.min = buffer.readInt();
+        requirement.max = buffer.readInt();
+        requirement.description = buffer.readString();
+        outRequirements.push_back(std::move(requirement));
+    }
 }
 
 } // namespace
@@ -1526,25 +1556,11 @@ void QuestType::decode(RSBuffer &buffer)
         }
         else if (opcode == 3)
         {
-            int count = buffer.readUnsignedByte();
-            progressVarps.resize(count);
-            for (int i = 0; i < count; i++)
-            {
-                progressVarps[i][0] = buffer.readUnsignedShort();
-                progressVarps[i][1] = buffer.readInt();
-                progressVarps[i][2] = buffer.readInt();
-            }
+            readQuestProgressVars(buffer, false, progressVarps);
         }
         else if (opcode == 4)
         {
-            int count = buffer.readUnsignedByte();
-            progressVarbits.resize(count);
-            for (int i = 0; i < count; i++)
-            {
-                progressVarbits[i][0] = buffer.readUnsignedShort();
-                progressVarbits[i][1] = buffer.readInt();
-                progressVarbits[i][2] = buffer.readInt();
-            }
+            readQuestProgressVars(buffer, false, progressVarbits);
         }
         else if (opcode == 5)
         {
@@ -1608,21 +1624,15 @@ void QuestType::decode(RSBuffer &buffer)
         }
         else if (opcode == 18)
         {
-            int count = buffer.readUnsignedByte();
-            for (int i = 0; i < count; i++)
-            {
-                buffer.skip(12);
-                buffer.readString();
-            }
+            readQuestVarRequirements(buffer, varpRequirements);
         }
         else if (opcode == 19)
         {
-            int count = buffer.readUnsignedByte();
-            for (int i = 0; i < count; i++)
-            {
-                buffer.skip(12);
-                buffer.readString();
-            }
+            readQuestVarRequirements(buffer, varbitRequirements);
+        }
+        else if (opcode == 22)
+        {
+            readQuestProgressVars(buffer, true, progressVarbits);
         }
         else if (opcode == 249)
         {
@@ -1640,6 +1650,13 @@ void QuestType::decode(RSBuffer &buffer)
                     params[key] = buffer.readInt();
                 }
             }
+        }
+        else
+        {
+            // An unknown opcode's payload width is unknown, so stop rather than read the
+            // rest of the record out of alignment as further opcodes.
+            unknownOpcode = opcode;
+            break;
         }
     }
 }
