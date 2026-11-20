@@ -19,6 +19,7 @@
 #include "core/TypeMappings.h"
 #include "dumper/Json.h"
 #include "maps/MapSquare.h"
+#include "maps/WorldMapElements.h"
 #include "network/Js5Cache.h"
 #include "network/Js5Compression.h"
 #include "network/Js5Config.h"
@@ -1315,6 +1316,148 @@ nxt_result nxt_get_mapsquare_locs(nxt_cache *handle, int square_x, int square_y,
     catch (const std::exception &e)
     {
         setError(std::string("get_mapsquare_locs failed: ") + e.what());
+        return NXT_ERR_DECODE;
+    }
+}
+
+namespace
+{
+
+// Copies decoded placements into a malloc'd C array (nullptr for an empty list).
+// The decoder bounds x/y to 14 bits, plane to 2 and flags to 8, so every
+// narrowing below is lossless. Returns false only when malloc fails.
+bool exportWmePlacements(const std::vector<maps::WorldMapElementPlacement> &placements,
+                         nxt_wme_placement **outPlacements, size_t *outCount)
+{
+    if (placements.empty())
+    {
+        return true;
+    }
+    auto *buf = static_cast<nxt_wme_placement *>(
+        std::malloc(placements.size() * sizeof(nxt_wme_placement)));
+    if (!buf)
+    {
+        return false;
+    }
+    for (size_t i = 0; i < placements.size(); i++)
+    {
+        const maps::WorldMapElementPlacement &p = placements[i];
+        buf[i].area_id = static_cast<int32_t>(p.areaId);
+        buf[i].element_id = static_cast<int32_t>(p.elementId);
+        buf[i].world_x = static_cast<uint16_t>(p.worldX);
+        buf[i].world_y = static_cast<uint16_t>(p.worldY);
+        buf[i].plane = static_cast<uint8_t>(p.plane);
+        buf[i].flags = static_cast<uint8_t>(p.flags);
+        buf[i]._pad = 0;
+    }
+    *outPlacements = buf;
+    *outCount = placements.size();
+    return true;
+}
+
+// Decodes one area and drops its archive afterwards: the element list is a few
+// hundred bytes, but the archive also carries the area's geography (megabytes
+// for the main map), which nothing else here needs kept.
+maps::WorldMapAreaResult readWmeArea(CacheSource &source, int areaId,
+                                     std::vector<maps::WorldMapElementPlacement> &outPlacements)
+{
+    maps::WorldMapAreaResult result = maps::buildWorldMapAreaElements(source, areaId, outPlacements);
+    source.evictArchive(maps::kWorldMapElementIndex, areaId);
+    return result;
+}
+
+}  // namespace
+
+nxt_result nxt_get_worldmap_area_elements(nxt_cache *handle, int area_id,
+                                          nxt_wme_placement **out_placements, size_t *out_count)
+{
+    if (!handle || !out_placements || !out_count)
+    {
+        setError("invalid argument: null handle or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    *out_placements = nullptr;
+    *out_count = 0;
+    if (area_id < 0)
+    {
+        setError("invalid argument: world map area " + std::to_string(area_id) + " is negative");
+        return NXT_ERR_INVALID;
+    }
+    auto *c = reinterpret_cast<Cache *>(handle);
+    try
+    {
+        std::vector<maps::WorldMapElementPlacement> placements;
+        switch (readWmeArea(*c->source, area_id, placements))
+        {
+        case maps::WorldMapAreaResult::Absent:
+            setError("world map area " + std::to_string(area_id) + " not present");
+            return NXT_ERR_NOT_FOUND;
+        case maps::WorldMapAreaResult::Malformed:
+            setError("world map area " + std::to_string(area_id) + ": malformed element file");
+            return NXT_ERR_DECODE;
+        case maps::WorldMapAreaResult::Ok:
+            break;
+        }
+        if (!exportWmePlacements(placements, out_placements, out_count))
+        {
+            setError("malloc failed");
+            return NXT_ERR_INTERNAL;
+        }
+        return NXT_OK;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("get_worldmap_area_elements failed: ") + e.what());
+        return NXT_ERR_DECODE;
+    }
+}
+
+nxt_result nxt_get_worldmap_elements(nxt_cache *handle, nxt_wme_placement **out_placements,
+                                     size_t *out_count)
+{
+    if (!handle || !out_placements || !out_count)
+    {
+        setError("invalid argument: null handle or out parameter");
+        return NXT_ERR_INVALID;
+    }
+    *out_placements = nullptr;
+    *out_count = 0;
+    auto *c = reinterpret_cast<Cache *>(handle);
+    try
+    {
+        std::vector<int> areaIds = c->source->archiveIds(maps::kWorldMapElementIndex);
+        std::sort(areaIds.begin(), areaIds.end());
+        std::vector<maps::WorldMapElementPlacement> all;
+        std::vector<maps::WorldMapElementPlacement> area;
+        for (int areaId : areaIds)
+        {
+            maps::WorldMapAreaResult result = readWmeArea(*c->source, areaId, area);
+            if (result == maps::WorldMapAreaResult::Malformed)
+            {
+                setError("world map area " + std::to_string(areaId) + ": malformed element file");
+                return NXT_ERR_DECODE;
+            }
+            // The reference table declares an element file for this area but the
+            // cache holds no data for it (a local cache without a live fallback).
+            // Fail rather than return a list that silently lacks the area.
+            if (result == maps::WorldMapAreaResult::Absent)
+            {
+                setError("world map area " + std::to_string(areaId)
+                         + " declares elements but is not present in the cache");
+                return NXT_ERR_NOT_FOUND;
+            }
+            all.insert(all.end(), area.begin(), area.end());
+        }
+        if (!exportWmePlacements(all, out_placements, out_count))
+        {
+            setError("malloc failed");
+            return NXT_ERR_INTERNAL;
+        }
+        return NXT_OK;
+    }
+    catch (const std::exception &e)
+    {
+        setError(std::string("get_worldmap_elements failed: ") + e.what());
         return NXT_ERR_DECODE;
     }
 }

@@ -430,6 +430,84 @@ NXT_LOC_LAYOUT_ASSERT(offsetof(nxt_loc_spawn, _pad) == 11, "nxt_loc_spawn layout
 NXT_API nxt_result nxt_get_mapsquare_locs(nxt_cache *cache, int square_x, int square_y,
                                           nxt_loc_spawn **out_locs, size_t *out_count);
 
+/* ---- World map element placements ----------------------------------------
+ *
+ * Where the world map places its elements (cache index 41): one record per
+ * placement, naming the WME definition that nxt_get_worldmap_json(element_id)
+ * decodes. Each index-41 archive is one world map area; the archive id is the
+ * area id (nxt_list_archive_ids(cache, 41, ...) enumerates them). File 1 of an
+ * area holds `u16 count` then count x { i32 packed coord, u16 element id,
+ * u8 flags }; an area without a file 1 places nothing.
+ *
+ * These are the world map's own elements: area and place labels, quest starts,
+ * lodestones, fairy rings, dungeon entrances and exits, and similar. Most
+ * minimap function icons (banks, altars, trees, anvils) are not here; they come
+ * from loc definitions placed in map squares (nxt_get_mapsquare_locs).
+ *
+ * Coordinates are tiles in the area's map space. For nearly every placement
+ * that is the world tile. The exception is the main overview area, which draws
+ * a few regions (Prifddinas, Ashdale, ...) at a position other than their real
+ * one. Their elements are placed at the drawn position there, and placed again
+ * at the real tile in the region's own area. Keep area_id when you need world
+ * tiles, and do not assume one element id has one position.
+ */
+
+/* Fixed-size POD, 16 bytes, no implicit padding. Offsets in brackets. */
+typedef struct nxt_wme_placement
+{
+    int32_t  area_id;       /* [0]  world map area (index-41 archive id) */
+    int32_t  element_id;    /* [4]  WME definition id (nxt_get_worldmap_json) */
+    uint16_t world_x;       /* [8]  tile x in the area's map space */
+    uint16_t world_y;       /* [10] tile y in the area's map space */
+    uint8_t  plane;         /* [12] 0..3 */
+    uint8_t  flags;         /* [13] raw trailing byte of the record; meaning not pinned */
+    uint16_t _pad;          /* [14] always 0 */
+} nxt_wme_placement;
+
+#if defined(__cplusplus)
+  #define NXT_WME_LAYOUT_ASSERT(cond, msg) static_assert(cond, msg)
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+  #define NXT_WME_LAYOUT_ASSERT(cond, msg) _Static_assert(cond, msg)
+#else
+  #define NXT_WME_LAYOUT_ASSERT(cond, msg)
+#endif
+NXT_WME_LAYOUT_ASSERT(sizeof(nxt_wme_placement) == 16, "nxt_wme_placement is a fixed 16-byte ABI");
+NXT_WME_LAYOUT_ASSERT(offsetof(nxt_wme_placement, area_id) == 0, "nxt_wme_placement layout drifted");
+NXT_WME_LAYOUT_ASSERT(offsetof(nxt_wme_placement, element_id) == 4, "nxt_wme_placement layout drifted");
+NXT_WME_LAYOUT_ASSERT(offsetof(nxt_wme_placement, world_x) == 8, "nxt_wme_placement layout drifted");
+NXT_WME_LAYOUT_ASSERT(offsetof(nxt_wme_placement, world_y) == 10, "nxt_wme_placement layout drifted");
+NXT_WME_LAYOUT_ASSERT(offsetof(nxt_wme_placement, plane) == 12, "nxt_wme_placement layout drifted");
+NXT_WME_LAYOUT_ASSERT(offsetof(nxt_wme_placement, flags) == 13, "nxt_wme_placement layout drifted");
+NXT_WME_LAYOUT_ASSERT(offsetof(nxt_wme_placement, _pad) == 14, "nxt_wme_placement layout drifted");
+#undef NXT_WME_LAYOUT_ASSERT
+
+/* Every element placement of one world map area, in file order. On success
+   *out_placements is a freshly allocated array of *out_count records (free with
+   nxt_free); an area that places nothing yields *out_placements == NULL and
+   *out_count == 0 with NXT_OK. Returns NXT_ERR_INVALID for a null handle / out
+   parameter or a negative area_id, NXT_ERR_NOT_FOUND if the area is absent, and
+   NXT_ERR_DECODE if its element file is not exactly 2 + 7 * count bytes. On any
+   failure with non-NULL out parameters, *out_placements is NULL and *out_count
+   is 0, so the caller has nothing to free. */
+NXT_API nxt_result nxt_get_worldmap_area_elements(nxt_cache *cache, int area_id,
+                                                  nxt_wme_placement **out_placements,
+                                                  size_t *out_count);
+
+/* Every element placement of every world map area in the cache, areas in
+   ascending id order and each area in file order. Same ownership and out-
+   parameter rules as nxt_get_worldmap_area_elements. All or nothing: if any
+   area's element file is malformed the call returns NXT_ERR_DECODE (naming the
+   area in nxt_last_error) and no records, and if an area whose reference-table
+   entry declares an element file has no data in the cache (a local cache with no
+   live fallback) the call returns NXT_ERR_NOT_FOUND, naming the area, rather
+   than a list that silently lacks it. An index 41 with no areas yields NXT_OK
+   and no records. Areas the reference table shows without an element file are
+   skipped unread; the others are read once and dropped afterwards, so a full
+   sweep does not keep the areas' map geography resident. */
+NXT_API nxt_result nxt_get_worldmap_elements(nxt_cache *cache,
+                                             nxt_wme_placement **out_placements,
+                                             size_t *out_count);
+
 /* ---- Config-type getters (single-entry JSON) ---------------------------
  *
  * Each function returns a NUL-terminated UTF-8 JSON document describing one

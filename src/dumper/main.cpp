@@ -13,6 +13,7 @@
 #include "dumper/ClientScriptDump.h"
 #include "dumper/Json.h"
 #include "maps/MapSquare.h"
+#include "maps/WorldMapElements.h"
 #include "network/Js5Cache.h"
 #include "render/IconRenderer.h"
 
@@ -877,54 +878,39 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    // World-map-element placements: cache index 41. Each archive file holds a u16
-    // count then count x { i32 packed, u16 wmeId, u8 flag }. The packed coord is
-    // plane=(p>>28)&3, x=(p>>14)&0x3FFF, y=p&0x3FFF. Emits every map-icon world
-    // position so a caller can resolve "where is X mineable/choppable/etc.".
+    // World-map-element placements: cache index 41, one archive per world map
+    // area. Only file 1 of an area is the element list (u16 count, then count x
+    // { i32 packed coord, u16 wme id, u8 flags }); file 0 is the area's geography
+    // and is not element data. Decoding file 0 as elements, as this once did, is
+    // what made the old output mostly noise. See maps/WorldMapElements.h.
     if (isWmeSpawn)
     {
-        constexpr int kWmeIndex = 41;
+        constexpr int kWmeIndex = maps::kWorldMapElementIndex;
         json entries = json::array();
         try
         {
-            std::vector<int> aids = cache->archiveIds(kWmeIndex);
-            for (int aid: aids)
+            std::vector<maps::WorldMapElementPlacement> placements;
+            for (int aid: cache->archiveIds(kWmeIndex))
             {
-                auto &archive = cache->archive(kWmeIndex, aid);
-                if (archive.id == -1)
-                {
-                    continue;
-                }
-                for (auto &[fid, fh]: archive.files)
-                {
-                    auto buf = archive.readFile(fid);
-                    if (buf.buffer == nullptr || buf.remaining() < 2)
-                    {
-                        continue;
-                    }
-                    int count = buf.readUnsignedShort();
-                    for (int i = 0; i < count; i++)
-                    {
-                        if (buf.remaining() < 7)
-                        {
-                            break;
-                        }
-                        int packed = buf.readInt();
-                        int wme = buf.readUnsignedShort();
-                        buf.readUnsignedByte();
-                        if (packed == -1)
-                        {
-                            continue;
-                        }
-                        entries.push_back({
-                            {"wme", wme},
-                            {"x", (packed >> 14) & 0x3FFF},
-                            {"y", packed & 0x3FFF},
-                            {"plane", (packed >> 28) & 0x3},
-                        });
-                    }
-                }
+                maps::WorldMapAreaResult result =
+                    maps::buildWorldMapAreaElements(*cache, aid, placements);
                 cache->evictArchive(kWmeIndex, aid);
+                if (result == maps::WorldMapAreaResult::Malformed)
+                {
+                    std::cerr << "wmespawn: area " << aid << " has a malformed element file\n";
+                    return 1;
+                }
+                for (const maps::WorldMapElementPlacement &p: placements)
+                {
+                    entries.push_back({
+                        {"area", p.areaId},
+                        {"wme", p.elementId},
+                        {"x", p.worldX},
+                        {"y", p.worldY},
+                        {"plane", p.plane},
+                        {"flags", p.flags},
+                    });
+                }
             }
         }
         catch (const std::exception &e)
